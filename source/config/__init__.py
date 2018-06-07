@@ -101,7 +101,9 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 	Most callers will want the C{globalVars.appArgs.configPath variable} instead.
 	"""
 	installedUserConfigPath=getInstalledUserConfigPath()
+	print "installed user config path is %s"%installedUserConfigPath
 	if installedUserConfigPath and (isInstalledCopy() or isAppX or (useInstalledPathIfExists and os.path.isdir(installedUserConfigPath))):
+		print "NVDA is installed on this system"
 		if isAppX:
 			# NVDA is running as a Windows Store application.
 			# Although Windows will redirect %APPDATA% to a user directory specific to the Windows Store application,
@@ -109,7 +111,9 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 			# We cannot share NVDA user config directories  with other copies of NVDA as their config may be using add-ons
 			# Therefore add a suffix to the directory to make it specific to Windows Store application versions.
 			installedUserConfigPath+='_appx'
+			print "This is Windows Store version of NVDA"
 		return installedUserConfigPath
+	print "NVDA is not installed on this system"
 	return u'.\\userConfig\\'
 
 def getSystemConfigPath():
@@ -126,8 +130,10 @@ def initConfigPath(configPath=None):
 	@param configPath: an optional path which should be used instead (only useful when being called from outside of NVDA)
 	@type configPath: basestring
 	"""
+	print "original config path is %s"%configPath
 	if not configPath:
 		configPath=globalVars.appArgs.configPath
+		print "modified config path is %s"%configPath
 	if not os.path.isdir(configPath):
 		os.makedirs(configPath)
 	subdirs=["speechDicts","profiles"]
