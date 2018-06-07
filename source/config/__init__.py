@@ -102,6 +102,14 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 	"""
 	installedUserConfigPath=getInstalledUserConfigPath()
 	print "installed user config path is %s"%installedUserConfigPath
+	print "checking if NVDA is truly installed..."
+	print isInstalledCopy()
+	print "checking if this is Windows Store version of NVDA..."
+	print isAppX
+	print "checking if use installed path exists parameter is specified..."
+	print useInstalledPathIfExists
+	print "checking if installed folder exists..."
+	print os.path.isdir(installedUserConfigPath)
 	if installedUserConfigPath and (isInstalledCopy() or isAppX or (useInstalledPathIfExists and os.path.isdir(installedUserConfigPath))):
 		print "NVDA is installed on this system"
 		if isAppX:
