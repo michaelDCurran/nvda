@@ -100,6 +100,7 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 	which includes temporary copies.
 	Most callers will want the C{globalVars.appArgs.configPath variable} instead.
 	"""
+	print "Centennial debug: testing why Windows Store version of NVDA is not detected as installed..."
 	installedUserConfigPath=getInstalledUserConfigPath()
 	print "installed user config path is %s"%installedUserConfigPath
 	print "checking if NVDA is truly installed..."
