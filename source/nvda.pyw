@@ -44,14 +44,15 @@ import winKernel
 
 # Find out if NVDA is running as a Windows Store application
 bufLen=ctypes.c_int()
-print "attempting to locate kernel32.dll::GetCurrentPackageFullName..."
-GetCurrentPackageFullName=ctypes.windll.kernel32.GetCurrentPackageFullName
-print "kernel32.dll::GetCurrentPackageFullName found"
-config.isAppX=False
-bufLen=ctypes.c_int()
-# Use GetCurrentPackageFullName to detect if we are running as a store app.
-# It returns 0 (success) if in a store app, and an error code otherwise. 
-config.isAppX=(GetCurrentPackageFullName(ctypes.byref(bufLen),None)==0)
+try:
+	GetCurrentPackageFullName=ctypes.windll.kernel32.GetCurrentPackageFullName
+except AttributeError:
+	config.isAppX=False
+else:
+	bufLen=ctypes.c_int()
+	# Use GetCurrentPackageFullName to detect if we are running as a store app.
+	# It returns 0 (success) if in a store app, and an error code otherwise. 
+	config.isAppX=(GetCurrentPackageFullName(ctypes.byref(bufLen),None)==0)
 
 class NoConsoleOptionParser(argparse.ArgumentParser):
 	"""A commandline option parser that shows its messages using dialogs,  as this pyw file has no dos console window associated with it"""

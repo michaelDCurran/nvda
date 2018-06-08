@@ -101,16 +101,11 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 	Most callers will want the C{globalVars.appArgs.configPath variable} instead.
 	"""
 	print "Centennial debug: testing why Windows Store version of NVDA is not detected as installed..."
-	installedUserConfigPath=getInstalledUserConfigPath()
-	print "installed user config path is %s"%installedUserConfigPath
-	print "checking if NVDA is truly installed..."
-	print isInstalledCopy()
-	print "checking if this is Windows Store version of NVDA..."
-	print isAppX
-	print "checking if use installed path exists parameter is specified..."
-	print useInstalledPathIfExists
-	print "checking if installed folder exists..."
-	print os.path.isdir(installedUserConfigPath)
+	import ctypes
+	GetCurrentPackageFullName=ctypes.windll.kernel32.GetCurrentPackageFullName
+	bufLen=ctypes.c_int()
+	print "GetCurrentPackageFullName says..."
+	print GetCurrentPackageFullName(ctypes.byref(bufLen),None)
 	if installedUserConfigPath and (isInstalledCopy() or isAppX or (useInstalledPathIfExists and os.path.isdir(installedUserConfigPath))):
 		print "NVDA is installed on this system"
 		if isAppX:
