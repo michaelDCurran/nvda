@@ -106,6 +106,7 @@ def getUserDefaultConfigPath(useInstalledPathIfExists=False):
 	bufLen=ctypes.c_int()
 	print "GetCurrentPackageFullName says..."
 	print GetCurrentPackageFullName(ctypes.byref(bufLen),None)
+	installedUserConfigPath=getInstalledUserConfigPath()
 	if installedUserConfigPath and (isInstalledCopy() or isAppX or (useInstalledPathIfExists and os.path.isdir(installedUserConfigPath))):
 		print "NVDA is installed on this system"
 		if isAppX:
