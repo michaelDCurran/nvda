@@ -51,8 +51,8 @@ except AttributeError:
 else:
 	bufLen=ctypes.c_int()
 	# Use GetCurrentPackageFullName to detect if we are running as a store app.
-	# It returns 0 (success) if in a store app, and an error code otherwise. 
-	config.isAppX=(GetCurrentPackageFullName(ctypes.byref(bufLen),None)==0)
+	# It returns 15700 if not a Store package.
+	config.isAppX=(GetCurrentPackageFullName(ctypes.byref(bufLen),None)!=15700)
 
 class NoConsoleOptionParser(argparse.ArgumentParser):
 	"""A commandline option parser that shows its messages using dialogs,  as this pyw file has no dos console window associated with it"""
