@@ -1,6 +1,6 @@
 #nvda.pyw
 #A part of NonVisual Desktop Access (NVDA)
-#Copyright (C) 2006-2017 NV Access Limited, Aleksey Sadovoy, Babbage B.V., Joseph Lee
+#Copyright (C) 2006-2018 NV Access Limited, Aleksey Sadovoy, Babbage B.V., Joseph Lee
 #This file is covered by the GNU General Public License.
 #See the file COPYING for more details.
 
@@ -51,7 +51,7 @@ except AttributeError:
 else:
 	bufLen=ctypes.c_int()
 	# Use GetCurrentPackageFullName to detect if we are running as a store app.
-	# It returns 15700 if not a Store package.
+	# #8362: error 15700 (not a package) error is returned if this is not a Windows Store package.
 	config.isAppX=(GetCurrentPackageFullName(ctypes.byref(bufLen),None)!=15700)
 
 class NoConsoleOptionParser(argparse.ArgumentParser):
