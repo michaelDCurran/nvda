@@ -119,6 +119,9 @@ textChangeUIAAutomationIDs = (
 
 textChangeUIAClassNames = (
 	"_WwG",  # Microsoft Word
+)
+
+windowsTerminalUIAClassNames = (
 	"TermControl",
 	"TermControl2",
 	"WPFTermControl",
@@ -199,6 +202,7 @@ UIAPropertyIdsToNVDAEventNames={
 
 globalEventHandlerGroupUIAPropertyIds = {
 	UIA.UIA_RangeValueValuePropertyId,
+	UIA.UIA_DragDropEffectPropertyId,
 	UIA.UIA_DropTargetDropTargetEffectPropertyId,
 }
 
@@ -647,6 +651,10 @@ class UIAHandler(COMObject):
 				if (
 					element.currentClassName in textChangeUIAClassNames
 					or element.CachedAutomationID in textChangeUIAAutomationIDs
+					or (
+						not utils._shouldUseWindowsTerminalNotifications()
+						and element.currentClassName in windowsTerminalUIAClassNames
+					)
 				):
 					group = self.localEventHandlerGroupWithTextChanges
 					logPrefix = "Explicitly"
@@ -703,6 +711,10 @@ class UIAHandler(COMObject):
 			if (
 				sender.currentClassName in textChangeUIAClassNames
 				or sender.CachedAutomationID in textChangeUIAAutomationIDs
+				or (
+					not utils._shouldUseWindowsTerminalNotifications()
+					and sender.currentClassName in windowsTerminalUIAClassNames
+				)
 			):
 				NVDAEventName = "textChange"
 			else:
@@ -855,6 +867,7 @@ class UIAHandler(COMObject):
 				log.debug(
 					"handleFocusChangedEvent: Could not create an NVDAObject "
 				)
+			return
 		if _isDebug():
 			log.debug(f"Created object {obj} for element {self.getUIAElementDebugString(sender)}")
 		if not obj.shouldAllowUIAFocusEvent:

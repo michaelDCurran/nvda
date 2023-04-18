@@ -1,8 +1,8 @@
 # A part of NonVisual Desktop Access (NVDA)
 # This file is covered by the GNU General Public License.
 # See the file COPYING for more details.
-# Copyright (C) 2009-2022 NV Access Limited, Joseph Lee, Mohammad Suliman,
-# Babbage B.V., Leonard de Ruijter, Bill Dengler
+# Copyright (C) 2009-2023 NV Access Limited, Joseph Lee, Mohammad Suliman, Babbage B.V., Leonard de Ruijter,
+# Bill Dengler, Cyrille Bougot
 
 """Support for UI Automation (UIA) controls."""
 import typing
@@ -41,6 +41,7 @@ from UIAHandler.utils import (
 	iterUIARangeByUnit,
 	UIAMixedAttributeError,
 	UIATextRangeFromElement,
+	_shouldUseWindowsTerminalNotifications,
 )
 from NVDAObjects.window import Window
 from NVDAObjects import (
@@ -387,8 +388,7 @@ class UIATextInfo(textInfos.TextInfo):
 			formatField['right-indent'] = self._getIndentValueDisplayString(uiaIndentTrailing)
 		return formatField
 	
-	@staticmethod
-	def _getIndentValueDisplayString(val: float) -> str:
+	def _getIndentValueDisplayString(self, val: float) -> str:
 		"""A function returning the string to display in formatting info.
 		@param val: an indent value measured in points, fetched via
 			an UIAHandler.UIA_Indentation*AttributeId attribute.
@@ -961,8 +961,8 @@ class UIATextInfo(textInfos.TextInfo):
 
 
 class UIA(Window):
-	_UIACustomProps = UIAHandler.customProps.CustomPropertiesCommon.get()
-	_UIACustomAnnotationTypes = UIAHandler.customAnnotations.CustomAnnotationTypesCommon.get()
+	_UIACustomProps = UIAHandler.customProps.CustomPropertiesCommon()
+	_UIACustomAnnotationTypes = UIAHandler.customAnnotations.CustomAnnotationTypesCommon()
 
 	shouldAllowDuplicateUIAFocusEvent = False
 
@@ -1211,7 +1211,10 @@ class UIA(Window):
 			winConsoleUIA.findExtraOverlayClasses(self, clsList)
 		elif UIAClassName in _all_wt_UIAClassNames:
 			from . import winConsoleUIA
-			clsList.append(winConsoleUIA.WinTerminalUIA)
+			if _shouldUseWindowsTerminalNotifications():
+				clsList.append(winConsoleUIA._NotificationsBasedWinTerminalUIA)
+			else:
+				clsList.append(winConsoleUIA._DiffBasedWinTerminalUIA)
 
 		# Add editableText support if UIA supports a text pattern
 		if self.TextInfo==UIATextInfo:
@@ -2102,7 +2105,13 @@ class UIA(Window):
 		# Ideally, we wouldn't use getPropertiesBraille directly.
 		braille.handler.message(braille.getPropertiesBraille(name=self.name, role=self.role))
 
-	def event_UIA_notification(self, notificationKind=None, notificationProcessing=UIAHandler.NotificationProcessing_CurrentThenMostRecent, displayString=None, activityId=None):
+	def event_UIA_notification(
+			self,
+			notificationKind: Optional[int] = None,
+			notificationProcessing: Optional[int] = UIAHandler.NotificationProcessing_CurrentThenMostRecent,
+			displayString: Optional[str] = None,
+			activityId: Optional[str] = None
+	):
 		"""
 		Introduced in Windows 10 Fall Creators Update (build 16299).
 		This base implementation announces all notifications from the UIA element.

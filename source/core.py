@@ -21,6 +21,7 @@ import nvwave
 import os
 import time
 import ctypes
+from enum import Enum
 import logHandler
 import languageHandler
 import globalVars
@@ -44,8 +45,7 @@ def __getattr__(attrName: str) -> Any:
 	raise AttributeError(f"module {repr(__name__)} has no attribute {repr(attrName)}")
 
 
-
-# inform those who want to know that NVDA has finished starting up.
+# Inform those who want to know that NVDA has finished starting up.
 postNvdaStartup = extensionPoints.Action()
 
 PUMP_MAX_DELAY = 10
@@ -54,7 +54,16 @@ PUMP_MAX_DELAY = 10
 mainThreadId = threading.get_ident()
 
 _pump = None
-_isPumpPending = False
+
+
+class _PumpPending(Enum):
+	NONE = 0
+	DELAYED = 1
+	IMMEDIATE = 2
+
+	def __bool__(self):
+		return self is not self.NONE
+
 
 _hasShutdownBeenTriggered = False
 _shuttingDownFlagLock = threading.Lock()
@@ -212,6 +221,8 @@ def resetConfiguration(factoryDefaults=False):
 	import speech
 	import vision
 	import inputCore
+	import bdDetect
+	import hwIo
 	import tones
 	log.debug("Terminating vision")
 	vision.terminate()
@@ -223,6 +234,10 @@ def resetConfiguration(factoryDefaults=False):
 	speech.terminate()
 	log.debug("terminating tones")
 	tones.terminate()
+	log.debug("Terminating background braille display detection")
+	bdDetect.terminate()
+	log.debug("Terminating background i/o")
+	hwIo.terminate()
 	log.debug("terminating addonHandler")
 	addonHandler.terminate()
 	log.debug("Reloading config")
@@ -237,6 +252,11 @@ def resetConfiguration(factoryDefaults=False):
 	languageHandler.setLanguage(lang)
 	# Addons
 	addonHandler.initialize()
+	# Hardware background i/o
+	log.debug("initializing background i/o")
+	hwIo.initialize()
+	log.debug("Initializing background braille display detection")
+	bdDetect.initialize()
 	# Tones
 	tones.initialize()
 	#Speech
@@ -422,6 +442,42 @@ def _handleNVDAModuleCleanupBeforeGUIExit():
 	brailleViewer.destroyBrailleViewer()
 
 
+def _initializeObjectCaches():
+	"""
+	Caches the desktop object.
+	This may make information from the desktop window available on the lock screen,
+	however no known exploit is known for this.
+	2023.1 plans to ensure the desktopObject is available only when signed-in.
+
+	The desktop object must be used, as setting the object caches has side effects,
+	such as focus events.
+	Side effects from events generated while setting these objects may require NVDA to be finished initializing.
+	E.G. An app module for a lockScreen window.
+	The desktop object is an NVDA object without event handlers associated with it.
+	"""
+	import api
+	import NVDAObjects
+	import winUser
+
+	desktopObject = NVDAObjects.window.Window(windowHandle=winUser.getDesktopWindow())
+	api.setDesktopObject(desktopObject)
+	api.setForegroundObject(desktopObject)
+	api.setFocusObject(desktopObject)
+	api.setNavigatorObject(desktopObject)
+	api.setMouseObject(desktopObject)
+
+
+def _doLoseFocus():
+	import api
+	focusObject = api.getFocusObject()
+	if focusObject and hasattr(focusObject, "event_loseFocus"):
+		log.debug("calling lose focus on object with focus")
+		try:
+			focusObject.event_loseFocus()
+		except Exception:
+			log.exception("Lose focus error")
+
+
 def main():
 	"""NVDA's core main loop.
 	This initializes all modules such as audio, IAccessible, keyboard, mouse, and GUI.
@@ -476,6 +532,12 @@ def main():
 	import NVDAHelper
 	log.debug("Initializing NVDAHelper")
 	NVDAHelper.initialize()
+	log.debug("initializing background i/o")
+	import hwIo
+	hwIo.initialize()
+	log.debug("Initializing background braille display detection")
+	import bdDetect
+	bdDetect.initialize()
 	log.debug("Initializing tones")
 	import tones
 	tones.initialize()
@@ -576,14 +638,8 @@ def main():
 	log.debug("Initializing garbageHandler")
 	garbageHandler.initialize()
 
-	import api
-	import winUser
-	import NVDAObjects.window
-	desktopObject=NVDAObjects.window.Window(windowHandle=winUser.getDesktopWindow())
-	api.setDesktopObject(desktopObject)
-	api.setFocusObject(desktopObject)
-	api.setNavigatorObject(desktopObject)
-	api.setMouseObject(desktopObject)
+	_initializeObjectCaches()
+
 	import JABHandler
 	log.debug("initializing Java Access Bridge support")
 	try:
@@ -658,11 +714,29 @@ def main():
 	# Doing this here is a bit ugly, but we don't want these modules imported
 	# at module level, including wx.
 	log.debug("Initializing core pump")
-	class CorePump(gui.NonReEntrantTimer):
+
+	class CorePump(wx.Timer):
 		"Checks the queues and executes functions."
-		def run(self):
-			global _isPumpPending
-			_isPumpPending = False
+		pending = _PumpPending.NONE
+		isPumping = False
+
+		def request(self):
+			if self.isPumping:
+				return  # Prevent re-entry.
+			if self.pending == _PumpPending.IMMEDIATE:
+				# A delayed pump might have been scheduled. If so, cancel it.
+				self.Stop()
+				self.Notify()
+			elif self.pending == _PumpPending.DELAYED:
+				self.Start(PUMP_MAX_DELAY, True)
+
+		def Notify(self):
+			if self.isPumping:
+				log.error("Pumping while already pumping", stack_info=True)
+			if not self.pending:
+				log.error("Pumping but pump wasn't pending", stack_info=True)
+			self.isPumping = True
+			self.pending = _PumpPending.NONE
 			watchdog.alive()
 			try:
 				if touchHandler.handler:
@@ -673,14 +747,16 @@ def main():
 				mouseHandler.pumpAll()
 				braille.pumpAll()
 				vision.pumpAll()
-			except:
+				sessionTracking.pumpAll()
+			except Exception:
 				log.exception("errors in this core pump cycle")
 			baseObject.AutoPropertyObject.invalidateCaches()
 			watchdog.asleep()
-			if _isPumpPending and not _pump.IsRunning():
+			self.isPumping = False
+			if self.pending:
 				# #3803: Another pump was requested during this pump execution.
 				# As our pump is not re-entrant, schedule another pump.
-				_pump.Start(PUMP_MAX_DELAY, True)
+				self.request()
 	global _pump
 	_pump = CorePump()
 	requestPump()
@@ -695,6 +771,12 @@ def main():
 	else:
 		log.debug("initializing updateCheck")
 		updateCheck.initialize()
+
+	from winAPI import sessionTracking
+	sessionTracking.initialize()
+
+	NVDAState._TrackNVDAInitialization.markInitializationComplete()
+
 	log.info("NVDA initialized")
 
 	# Queue the firing of the postNVDAStartup notification.
@@ -721,13 +803,8 @@ def main():
 	_terminate(gui)
 	config.saveOnExit()
 
-	try:
-		focusObject = api.getFocusObject()
-		if focusObject and hasattr(focusObject, "event_loseFocus"):
-			log.debug("calling lose focus on object with focus")
-			focusObject.event_loseFocus()
-	except:
-		log.exception("Lose focus error")
+	_doLoseFocus()
+
 	try:
 		speech.cancelSpeech()
 	except:
@@ -750,6 +827,8 @@ def main():
 	_terminate(brailleInput)
 	_terminate(braille)
 	_terminate(speech)
+	_terminate(bdDetect)
+	_terminate(hwIo)
 	_terminate(addonHandler)
 	_terminate(garbageHandler)
 	# DMP is only started if needed.
@@ -783,23 +862,28 @@ def _terminate(module, name=None):
 	except:
 		log.exception("Error terminating %s" % name)
 
-def requestPump():
+
+def requestPump(immediate: bool = False):
 	"""Request a core pump.
 	This will perform any queued activity.
-	It is delayed slightly so that queues can implement rate limiting,
-	filter extraneous events, etc.
+	@param immediate: If True, the pump will happen as soon as possible. This
+		should be used where response time is most important; e.g. user input or
+		focus events.
+		If False, it is delayed slightly so that queues can implement rate limiting,
+		filter extraneous events, etc.
 	"""
-	global _isPumpPending
-	if not _pump or _isPumpPending:
+	if not _pump:
 		return
-	_isPumpPending = True
-	if threading.get_ident() == mainThreadId:
-		_pump.Start(PUMP_MAX_DELAY, True)
-		return
-	# This isn't the main thread. wx timers cannot be run outside the main thread.
-	# Therefore, Have wx start it in the main thread with a CallAfter.
-	import wx
-	wx.CallAfter(_pump.Start,PUMP_MAX_DELAY, True)
+	# We only need to do something if:
+	if (
+		# There is no pending pump.
+		_pump.pending == _PumpPending.NONE
+		# There is a pending delayed pump but an immediate pump was just requested.
+		or (immediate and _pump.pending == _PumpPending.DELAYED)
+	):
+		_pump.pending = _PumpPending.IMMEDIATE if immediate else _PumpPending.DELAYED
+		import wx
+		wx.CallAfter(_pump.request)
 
 
 class NVDANotInitializedError(Exception):
