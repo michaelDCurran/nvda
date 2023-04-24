@@ -9,12 +9,9 @@
 #include <atomic>
 #include <atlcomcli.h>
 #include <comutil.h>
+#include <common/log.h>
 
 template<typename t> struct debug_print_type;
-
-void log(const char* message) {
-	std::cerr<<message<<std::endl;
-}
 
 std::vector<int> SafeArrayToVector(SAFEARRAY* pSafeArray) {
 	std::vector<int> vec;
@@ -41,62 +38,52 @@ std::vector<int> getRuntimeIDFromElement(IUIAutomationElement* pElement) {
 	return runtimeID;
 }
 
+class RateLimitedEventHandler;
+
 class EventRecord_t {
 	public:
 	CComPtr<IUIAutomationElement> element;
-	EventRecord_t(IUIAutomationElement* pElement): element(pElement) {
+	bool isCoalesceable;
+	std::vector<int> coalescingKey;
+	unsigned int coalesceCount = 0;
+	EventRecord_t(IUIAutomationElement* pElement, bool isCoAlesceable): element(pElement), isCoalesceable(isCoalesceable) {
+		if(isCoalesceable) {
+			coalescingKey = getRuntimeIDFromElement(element);
+		}
 	}
+	bool canCoalesce(const EventRecord_t& other) CONST {
+		return isCoalesceable && other.isCoalesceable && coalescingKey == other.coalescingKey;
+	}
+	virtual HRESULT emit(const RateLimitedEventHandler& handler) const = 0; 
+	virtual ~EventRecord_t() = default;
 };
 
 class FocusChangedEventRecord_t: public EventRecord_t {
 	public:
-	FocusChangedEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement) {
+	FocusChangedEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement, false) {
 	}
-	HRESULT emit(IUIAutomationFocusChangedEventHandler* handler) const {
-		return handler->HandleFocusChangedEvent(element);
-	}
+	HRESULT emit(const RateLimitedEventHandler& handler) const override;
 };
 
-class CoalesceableEventRecord_t: public EventRecord_t {
-	public:
-	std::vector<int> runtimeID;
-	unsigned int coalesceCount;
-	CoalesceableEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement) {
-		runtimeID = getRuntimeIDFromElement(element);
-	}
-	bool isEqual(const CoalesceableEventRecord_t& other) const {
-		return runtimeID == other.runtimeID;
-	}
-};
-
-class AutomationEventRecord_t: public CoalesceableEventRecord_t {
+class AutomationEventRecord_t: public EventRecord_t {
 	public:
 	EVENTID eventID;
-	AutomationEventRecord_t(IUIAutomationElement* pElement, EVENTID eventID): CoalesceableEventRecord_t(pElement), eventID(eventID) {
+	AutomationEventRecord_t(IUIAutomationElement* pElement, EVENTID eventID): EventRecord_t(pElement, true), eventID(eventID) {
+		coalescingKey.push_back(eventID);
 	}
-	HRESULT emit(IUIAutomationEventHandler* handler) const {
-		return handler->HandleAutomationEvent(element, eventID);
-	}
-	bool isEqual(const AutomationEventRecord_t& other) const {
-		return eventID == other.eventID && static_cast<CoalesceableEventRecord_t>(*this).isEqual(other);
-	}
+	HRESULT emit(CONST RateLimitedEventHandler& handler) const override; 
 };
 
-class PropertyChangedEventRecord_t: public CoalesceableEventRecord_t {
+class PropertyChangedEventRecord_t: public EventRecord_t {
 	public:
 	PROPERTYID propertyID;
 	CComVariant value;
-	PropertyChangedEventRecord_t(IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT value): CoalesceableEventRecord_t(pElement), propertyID(propertyID), value(value) { 
+	PropertyChangedEventRecord_t(IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT value): EventRecord_t(pElement, true), propertyID(propertyID), value(value) { 
+		coalescingKey.push_back(UIA_AutomationPropertyChangedEventId);
+		coalescingKey.push_back(propertyID);
 	}
-	HRESULT emit(IUIAutomationPropertyChangedEventHandler* handler) const {
-		return handler->HandlePropertyChangedEvent(element, propertyID, value);
-	}
-	bool isEqual(const PropertyChangedEventRecord_t& other) const {
-		return propertyID == other.propertyID && static_cast<CoalesceableEventRecord_t>(*this).isEqual(other);
-	}
+	HRESULT emit(CONST RateLimitedEventHandler& handler) const override;
 };
-
-using AnyEventRecord_t = std::variant<FocusChangedEventRecord_t, AutomationEventRecord_t, PropertyChangedEventRecord_t>;
 
 class RateLimitedEventHandler : public IUIAutomationEventHandler, public IUIAutomationFocusChangedEventHandler, public IUIAutomationPropertyChangedEventHandler {
 private:
@@ -104,57 +91,80 @@ private:
 	CComQIPtr<IUIAutomationEventHandler> m_pExistingAutomationEventHandler;
 	CComQIPtr<IUIAutomationFocusChangedEventHandler> m_pExistingFocusChangedEventHandler;
 	CComQIPtr<IUIAutomationPropertyChangedEventHandler> m_pExistingPropertyChangedEventHandler;
-	void(*m_onFirstEvent)(void);
+	std::function<void()> m_onFirstEvent;
 	std::mutex mtx;
-	std::list<AnyEventRecord_t> m_eventRecords;
+	std::list<std::unique_ptr<EventRecord_t>> m_eventRecords;
 
-	HRESULT addEvent(AnyEventRecord_t&& recordVar) {
-		log("RateLimitedUIAEventHandler::addEvent called");
+	HRESULT queueEvent(std::unique_ptr<EventRecord_t> record) {
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent called");
+		if(!record) {
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: NULL record. Returning");
+			return E_INVALIDARG;
+		}
+
 		bool needsCallback = false;
 		{ std::lock_guard lock(mtx);
 			if(m_eventRecords.empty()) {
-				log("RateLimitedUIAEventHandler::addEvent: First event, needs callback.");
+				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: First event, needs callback.");
 				needsCallback = true;
 			}
-			unsigned int coalesceCount = 0;
-			std::visit([this,&coalesceCount](const auto& record) {
-				using RecordType = std::decay_t<decltype(record)>;
-				if constexpr(std::is_base_of_v<CoalesceableEventRecord_t, RecordType>) {
-					log("RateLimitedUIAEventHandler::addEvent: Is a coalesceable event");
-					auto existingIter = std::find_if(m_eventRecords.begin(), m_eventRecords.end(), [&](auto& existingRecordVar) {
-						auto existingRecordPtr = std::get_if<RecordType>(&existingRecordVar);
-						if(existingRecordPtr) {
-							log("RateLimitedUIAEventHandler::addEvent: found an existing event"); 
-							coalesceCount += existingRecordPtr->coalesceCount;
-							return true;
-						}
-						return false;
-					});
-					if(existingIter != m_eventRecords.end()) {
-						log("RateLimitedUIAEventHandler::addEvent: removing existing event"); 
-						m_eventRecords.erase(existingIter);
+			if(record->isCoalesceable) {
+				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Is a coalesceable event");
+				auto existingIter = std::find_if(m_eventRecords.begin(), m_eventRecords.end(), [&record](const auto& existingRecord) {
+					if(record->canCoalesce(*existingRecord)) {
+						LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: found an existing event"); 
+						record->coalesceCount += existingRecord->coalesceCount;
+						return true;
 					}
+					return false;
+				});
+				if(existingIter != m_eventRecords.end()) {
+					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: removing existing event"); 
+					m_eventRecords.erase(existingIter);
 				}
-			}, recordVar);
-			log("RateLimitedUIAEventHandler::addEvent: Inserting new event");
-			m_eventRecords.push_back(recordVar);
+			}
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Inserting new event");
+			record->coalesceCount += 1;
+			m_eventRecords.push_back(std::move(record));
 		}
 		if(needsCallback) {
-			log("RateLimitedUIAEventHandler::addEvent: Firing callback");
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Firing callback");
 			m_onFirstEvent();
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Done firing callback");
 		}
 		return S_OK;
 	}
 
 	~RateLimitedEventHandler() {
-		log("RateLimitedUIAEventHandler::~RateLimitedUIAEventHandler called");
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::~RateLimitedUIAEventHandler called");
+	}
+
+	protected:
+	friend EventRecord_t;
+	friend AutomationEventRecord_t;
+	friend FocusChangedEventRecord_t;
+	friend PropertyChangedEventRecord_t;
+
+	HRESULT emitAutomationEvent(const AutomationEventRecord_t& record) const {
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::emitAutomationEvent called");
+		return m_pExistingAutomationEventHandler->HandleAutomationEvent(record.element, record.eventID);
+	}
+
+	HRESULT emitFocusChangedEvent(const FocusChangedEventRecord_t& record) const {
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::emitFocusChangedEvent called");
+		return m_pExistingFocusChangedEventHandler->HandleFocusChangedEvent(record.element);
+	}
+
+	HRESULT emitPropertyChangedEvent(const PropertyChangedEventRecord_t& record) const {
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::emitPropertyChangedEvent called");
+		return m_pExistingPropertyChangedEventHandler->HandlePropertyChangedEvent(record.element, record.propertyID, record.value);
 	}
 
 public:
 
-	RateLimitedEventHandler(IUnknown* pExistingHandler, void(*onFirstEvent)(void))
-		: m_refCount(1), m_pExistingAutomationEventHandler(pExistingHandler), m_pExistingFocusChangedEventHandler(pExistingHandler), m_pExistingPropertyChangedEventHandler(pExistingHandler) {
-			log("RateLimitedUIAEventHandler::RateLimitedUIAEventHandler called");
+	RateLimitedEventHandler(IUnknown* pExistingHandler, std::function<void()> onFirstEvent)
+		: m_onFirstEvent(onFirstEvent), m_refCount(1), m_pExistingAutomationEventHandler(pExistingHandler), m_pExistingFocusChangedEventHandler(pExistingHandler), m_pExistingPropertyChangedEventHandler(pExistingHandler) {
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::RateLimitedUIAEventHandler called");
 		}
 
 	// IUnknown methods
@@ -194,82 +204,92 @@ public:
 
 	// IUIAutomationEventHandler method
 	HRESULT STDMETHODCALLTYPE HandleAutomationEvent(IUIAutomationElement* pElement, EVENTID eventID) {
-		log("RateLimitedUIAEventHandler::HandleAutomationEvent called");
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::HandleAutomationEvent called");
 		if(!m_pExistingAutomationEventHandler) {
-			log("RateLimitedUIAEventHandler::HandleAutomationEvent: No existing evnet handler. Returning");
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::HandleAutomationEvent: No existing evnet handler. Returning");
 			return E_NOTIMPL;
 		}
-		return addEvent(AutomationEventRecord_t(pElement, eventID));
+		auto record = std::make_unique<AutomationEventRecord_t>(pElement, eventID);
+		return queueEvent(std::move(record));
 	}
 
 	// IUIAutomationFocusEventHandler method
 	HRESULT STDMETHODCALLTYPE HandleFocusChangedEvent(IUIAutomationElement* pElement) {
-		log("RateLimitedUIAEventHandler::HandleFocusChangedEvent called");
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::HandleFocusChangedEvent called");
 		if(!m_pExistingFocusChangedEventHandler) {
-			log("RateLimitedUIAEventHandler::HandleFocusChangedEvent: No existing focusChangeEventHandler, returning");
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::HandleFocusChangedEvent: No existing focusChangeEventHandler, returning");
 			return E_NOTIMPL;
 		}
-		return addEvent(FocusChangedEventRecord_t(pElement));
+		auto record = std::make_unique<FocusChangedEventRecord_t>(pElement);
+		return queueEvent(std::move(record));
 	}
 
 	// IUIAutomationPropertyChangedEventHandler method
 	HRESULT STDMETHODCALLTYPE HandlePropertyChangedEvent(
 	IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT newValue) {
-		log("RateLimitedUIAEventHandler::HandlePropertyChangedEvent called");
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::HandlePropertyChangedEvent called");
 		if(!m_pExistingPropertyChangedEventHandler) {
-			log("RateLimitedUIAEventHandler::HandlePropertyChangedEvent: no existing handler. Returning");
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::HandlePropertyChangedEvent: no existing handler. Returning");
 			return E_NOTIMPL;
 		}
-		return addEvent(PropertyChangedEventRecord_t(pElement, propertyID, newValue));
+		auto record = std::make_unique<PropertyChangedEventRecord_t>(pElement, propertyID, newValue);
+		return queueEvent(std::move(record));
 	}
 
 	void flush() {
-		log("RateLimitedUIAEventHandler::flush called");
-		std::list<AnyEventRecord_t> eventRecordsCopy;
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush called");
+		std::list<std::unique_ptr<EventRecord_t>> eventRecordsCopy;
 		{ std::lock_guard lock(mtx);
 			eventRecordsCopy.swap(m_eventRecords);
 		}
 
 		// Emit events
-		for(auto& recordVar: eventRecordsCopy) {
-			std::visit([this](const auto& record) {
-				using RecordType = std::decay_t<decltype(record)>;
-				if constexpr(std::is_same_v<FocusChangedEventRecord_t, RecordType>) {
-					record.emit(this->m_pExistingFocusChangedEventHandler);
-				} else if constexpr(std::is_same_v<AutomationEventRecord_t, RecordType>) {
-					record.emit(this->m_pExistingAutomationEventHandler);
-				} else if constexpr(std::is_same_v<PropertyChangedEventRecord_t, RecordType>) {
-					record.emit(this->m_pExistingPropertyChangedEventHandler);
-				} else {
-					debug_print_type<RecordType>{};
-				}
-			}, recordVar);
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush: Emitting events...");
+		for(const auto& record: eventRecordsCopy) {
+			record->emit(*this);
 		}
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush: done emitting events"); 
 	}
 
 };
 
+HRESULT FocusChangedEventRecord_t::emit(const RateLimitedEventHandler& handler) const {
+	LOG_DEBUG(L"FocusChangedEventRecord_t::emit: Emmiting event");
+	return handler.emitFocusChangedEvent(*this);
+}
+
+HRESULT AutomationEventRecord_t::emit(CONST RateLimitedEventHandler& handler) const {
+	LOG_DEBUG(L"AutomationEventRecord_t::emit: Emitting event of type "<<(this->eventID)<<L", coalesceCount "<<(this->coalesceCount));
+	if(this->coalesceCount > 1) Beep(500+(this->coalesceCount)*100, 40);
+	return handler.emitAutomationEvent(*this);
+}
+
+HRESULT PropertyChangedEventRecord_t::emit(CONST RateLimitedEventHandler& handler) const {
+	LOG_DEBUG(L"PropertyChangedEventRecord_t::emit: Emitting property changed event for property  "<<(this->propertyID)<<L", coalesceCount "<<(this->coalesceCount));
+	return handler.emitPropertyChangedEvent(*this);
+}
+
 HRESULT rateLimitedUIAEventHandler_create(IUnknown* pExistingHandler, void(*onFirstEvent)(void), RateLimitedEventHandler** ppRateLimitedEventHandler) {
-	log("rateLimitedUIAEventHandler_create called");
+	LOG_DEBUG(L"rateLimitedUIAEventHandler_create called");
 	if (!pExistingHandler || !ppRateLimitedEventHandler) {
-		log("rateLimitedUIAEventHandler_create: invalid arguments. Returning");
+		LOG_DEBUG(L"rateLimitedUIAEventHandler_create: invalid arguments. Returning");
 		return E_INVALIDARG;
 	}
 
 	// Create the RateLimitedEventHandler instance
 	*ppRateLimitedEventHandler = new RateLimitedEventHandler(pExistingHandler, onFirstEvent);
 	if (!(*ppRateLimitedEventHandler)) {
-		log("rateLimitedUIAEventHandler_create: Could not create RateLimitedUIAEventHandler. Returning");
+		LOG_DEBUG(L"rateLimitedUIAEventHandler_create: Could not create RateLimitedUIAEventHandler. Returning");
 		return E_OUTOFMEMORY;
 	}
-	log("rateLimitedUIAEventHandler_create: done");
+	LOG_DEBUG(L"rateLimitedUIAEventHandler_create: done");
 	return S_OK;
 }
 
 HRESULT rateLimitedUIAEventHandler_flush(RateLimitedEventHandler* pRateLimitedEventHandler) {
-	log("rateLimitedUIAEventHandler_flush called");
+	LOG_DEBUG(L"rateLimitedUIAEventHandler_flush called");
 	if(!pRateLimitedEventHandler) {
-		log("rateLimitedUIAEventHandler_flush: invalid argument. Returning");
+		LOG_DEBUG(L"rateLimitedUIAEventHandler_flush: invalid argument. Returning");
 		return E_INVALIDARG;
 	}
 	pRateLimitedEventHandler->flush();

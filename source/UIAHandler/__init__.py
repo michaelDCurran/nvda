@@ -514,7 +514,7 @@ class UIAHandler(COMObject):
 			self.reservedNotSupportedValue=self.clientObject.ReservedNotSupportedValue
 			self.ReservedMixedAttributeValue=self.clientObject.ReservedMixedAttributeValue
 			self.pRateLimitedEventHandler = POINTER(IUnknown)()
-			self._onFirstEvent = lambda: core.callLater(20, NVDAHelper.localLib.rateLimitedUIAEventHandler_flush, self.pRateLimitedEventHandler)
+			self._onFirstEvent = lambda: core.callLater(100, NVDAHelper.localLib.rateLimitedUIAEventHandler_flush, self.pRateLimitedEventHandler)
 			self._cOnFirstEvent=CFUNCTYPE(c_voidp)(self._onFirstEvent)
 			NVDAHelper.localLib.rateLimitedUIAEventHandler_create(
 				self._com_pointers_[IUnknown._iid_],
