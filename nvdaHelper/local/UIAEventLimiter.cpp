@@ -42,10 +42,13 @@ class RateLimitedEventHandler;
 
 class EventRecord_t {
 	public:
+	EventRecord_t(const EventRecord_t& other) = delete;
+	EventRecord_t& operator =(const EventRecord_t& other) = delete;
 	CComPtr<IUIAutomationElement> element;
 	bool isCoalesceable;
 	std::vector<int> coalescingKey;
 	unsigned int coalesceCount = 0;
+	bool isOld = false;
 	EventRecord_t(IUIAutomationElement* pElement, bool isCoAlesceable): element(pElement), isCoalesceable(isCoalesceable) {
 		if(isCoalesceable) {
 			coalescingKey = getRuntimeIDFromElement(element);
@@ -94,6 +97,7 @@ private:
 	std::function<void()> m_onFirstEvent;
 	std::mutex mtx;
 	std::list<std::unique_ptr<EventRecord_t>> m_eventRecords;
+	std::map<std::vector<int>, decltype(m_eventRecords)::iterator> m_eventRecordsByKey;
 
 	HRESULT queueEvent(std::unique_ptr<EventRecord_t> record) {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent called");
@@ -108,24 +112,26 @@ private:
 				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: First event, needs callback.");
 				needsCallback = true;
 			}
-			if(record->isCoalesceable) {
-				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Is a coalesceable event");
-				auto existingIter = std::find_if(m_eventRecords.begin(), m_eventRecords.end(), [&record](const auto& existingRecord) {
-					if(record->canCoalesce(*existingRecord)) {
-						LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: found an existing event"); 
-						record->coalesceCount += existingRecord->coalesceCount;
-						return true;
-					}
-					return false;
-				});
-				if(existingIter != m_eventRecords.end()) {
-					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: removing existing event"); 
-					m_eventRecords.erase(existingIter);
-				}
-			}
 			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Inserting new event");
 			record->coalesceCount += 1;
-			m_eventRecords.push_back(std::move(record));
+			auto newRecordIter = m_eventRecords.insert(m_eventRecords.end(), std::move(record));
+			if(record->isCoalesceable) {
+				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Is a coalesceable event");
+				auto existingKeyIter = m_eventRecordsByKey.find(record->coalescingKey);
+				if(existingKeyIter != m_eventRecordsByKey.end()) {
+					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: found existing event with same key"); 
+					auto existingRecordIter = existingKeyIter->second;
+					record->coalesceCount += (*existingRecordIter)->coalesceCount;
+					//m_eventRecords.erase(existingRecordIter);
+					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: marking existing record as old");
+					(*existingRecordIter)->isOld = true;
+					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: updating key");
+					existingKeyIter->second = existingRecordIter;
+				} else {
+					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Adding key");
+					m_eventRecordsByKey.insert({record->coalescingKey, newRecordIter});
+				}
+			}
 		}
 		if(needsCallback) {
 			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Firing callback");
@@ -238,14 +244,20 @@ public:
 
 	void flush() {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush called");
-		std::list<std::unique_ptr<EventRecord_t>> eventRecordsCopy;
+		decltype(m_eventRecords) eventRecordsCopy;
+		decltype(m_eventRecordsByKey) eventRecordsByKeyCopy;
 		{ std::lock_guard lock(mtx);
 			eventRecordsCopy.swap(m_eventRecords);
+			eventRecordsByKeyCopy.swap(m_eventRecordsByKey);
+			m_eventRecordsByKey.clear();
 		}
 
 		// Emit events
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush: Emitting events...");
 		for(const auto& record: eventRecordsCopy) {
+			if(record->isOld) {
+				continue;
+			}
 			record->emit(*this);
 		}
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush: done emitting events"); 
