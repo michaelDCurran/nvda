@@ -27,6 +27,7 @@ from comtypes import (
 
 import threading
 import time
+import winAPI.messageWindow
 import IAccessibleHandler.internalWinEventHandler
 import config
 from config import (
@@ -514,13 +515,13 @@ class UIAHandler(COMObject):
 			self.reservedNotSupportedValue=self.clientObject.ReservedNotSupportedValue
 			self.ReservedMixedAttributeValue=self.clientObject.ReservedMixedAttributeValue
 			self.pRateLimitedEventHandler = POINTER(IUnknown)()
-			self._onFirstEvent = lambda: core.callLater(20, NVDAHelper.localLib.rateLimitedUIAEventHandler_flush, self.pRateLimitedEventHandler)
-			self._cOnFirstEvent=CFUNCTYPE(c_voidp)(self._onFirstEvent)
 			NVDAHelper.localLib.rateLimitedUIAEventHandler_create(
 				self._com_pointers_[IUnknown._iid_],
-				self._cOnFirstEvent,
+				core.messageWindow.handle,
+				WM_NVDA_UIA_FLUSH,
 				byref(self.pRateLimitedEventHandler)
 			)
+			winAPI.messageWindow.pre_handleWindowMessage.register(eventLimiterWindowProc)
 			if utils._shouldSelectivelyRegister():
 				self._createLocalEventHandlerGroup()
 			self._registerGlobalEventHandlers()
@@ -1404,3 +1405,12 @@ def terminate():
 
 def _isDebug():
 	return config.conf["debugLog"]["UIA"]
+
+
+WM_NVDA_UIA_FLUSH = winUser.registerWindowMessage("WM_NVDA_UIA_FLUSH")
+def eventLimiterWindowProc(msg, wParam, lParam):
+	if msg == WM_NVDA_UIA_FLUSH:
+		if lParam == 0:
+			NVDAHelper.localLib.rateLimitedUIAEventHandler_flush(wParam)
+		else:
+			core.callLater(lParam, NVDAHelper.localLib.rateLimitedUIAEventHandler_flush, wParam)

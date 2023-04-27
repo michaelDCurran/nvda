@@ -48,7 +48,8 @@ class EventRecord_t {
 	bool isCoalesceable;
 	std::vector<int> coalescingKey;
 	unsigned int coalesceCount = 0;
-	EventRecord_t(IUIAutomationElement* pElement, bool isCoAlesceable): element(pElement), isCoalesceable(isCoalesceable) {
+	bool forceFlush;
+	EventRecord_t(IUIAutomationElement* pElement, bool isCoAlesceable, bool forceFlush): element(pElement), isCoalesceable(isCoalesceable), forceFlush(forceFlush) {
 		if(isCoalesceable) {
 			coalescingKey = getRuntimeIDFromElement(element);
 		}
@@ -56,19 +57,18 @@ class EventRecord_t {
 	bool canCoalesce(const EventRecord_t& other) CONST {
 		return isCoalesceable && other.isCoalesceable && coalescingKey == other.coalescingKey;
 	}
-	virtual ~EventRecord_t() = default;
 };
 
 class FocusChangedEventRecord_t: public EventRecord_t {
 	public:
-	FocusChangedEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement, false) {
+	FocusChangedEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement, false, true) {
 	}
 };
 
 class AutomationEventRecord_t: public EventRecord_t {
 	public:
 	EVENTID eventID;
-	AutomationEventRecord_t(IUIAutomationElement* pElement, EVENTID eventID): EventRecord_t(pElement, true), eventID(eventID) {
+	AutomationEventRecord_t(IUIAutomationElement* pElement, EVENTID eventID): EventRecord_t(pElement, true, false), eventID(eventID) {
 		coalescingKey.push_back(eventID);
 	}
 };
@@ -77,7 +77,7 @@ class PropertyChangedEventRecord_t: public EventRecord_t {
 	public:
 	PROPERTYID propertyID;
 	CComVariant value;
-	PropertyChangedEventRecord_t(IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT value): EventRecord_t(pElement, true), propertyID(propertyID), value(value) { 
+	PropertyChangedEventRecord_t(IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT value): EventRecord_t(pElement, true, false), propertyID(propertyID), value(value) { 
 		coalescingKey.push_back(UIA_AutomationPropertyChangedEventId);
 		coalescingKey.push_back(propertyID);
 	}
@@ -91,24 +91,30 @@ private:
 	CComQIPtr<IUIAutomationEventHandler> m_pExistingAutomationEventHandler;
 	CComQIPtr<IUIAutomationFocusChangedEventHandler> m_pExistingFocusChangedEventHandler;
 	CComQIPtr<IUIAutomationPropertyChangedEventHandler> m_pExistingPropertyChangedEventHandler;
-	std::function<void()> m_onFirstEvent;
+	HWND m_messageWindow;
+	UINT m_flushMessage;
 	std::mutex mtx;
 	std::list<AnyEventRecord_t> m_eventRecords;
 	std::map<std::vector<int>, decltype(m_eventRecords)::iterator> m_eventRecordsByKey;
 
 	template<typename EventRecordClass, typename... EventRecordArgTypes> HRESULT queueEvent(EventRecordArgTypes&&... args) {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent called");
-		bool needsCallback = false;
+		bool needsFlush = false;
+		unsigned int flushTimeMS = 30;
 		{ std::lock_guard lock(mtx);
 			if(m_eventRecords.empty()) {
 				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: First event, needs callback.");
-				needsCallback = true;
+				needsFlush = true;
 			}
 			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Inserting new event");
 			auto& recordVar = m_eventRecords.emplace_back(std::in_place_type_t<EventRecordClass>(),args...);
 			auto recordVarIter = m_eventRecords.end();
 			recordVarIter--;
 			auto& record = std::get<EventRecordClass>(recordVar);
+			if(record.forceFlush) {
+				needsFlush = true;
+				flushTimeMS = 0;
+			}
 			if(record.isCoalesceable) {
 				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Is a coalesceable event");
 				record.coalesceCount += 1;
@@ -129,23 +135,12 @@ private:
 				}
 			}
 		}
-		if(needsCallback) {
-			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Firing callback");
-			m_onFirstEvent();
-			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Done firing callback");
+		if(needsFlush) {
+			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: posting flush message");
+			PostMessage(m_messageWindow, m_flushMessage, reinterpret_cast<WPARAM>(this), flushTimeMS);
 		}
 		return S_OK;
 	}
-
-	~RateLimitedEventHandler() {
-		LOG_DEBUG(L"RateLimitedUIAEventHandler::~RateLimitedUIAEventHandler called");
-	}
-
-	protected:
-	friend EventRecord_t;
-	friend AutomationEventRecord_t;
-	friend FocusChangedEventRecord_t;
-	friend PropertyChangedEventRecord_t;
 
 	HRESULT emitEvent(const AutomationEventRecord_t& record) const {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::emitAutomationEvent called");
@@ -162,10 +157,14 @@ private:
 		return m_pExistingPropertyChangedEventHandler->HandlePropertyChangedEvent(record.element, record.propertyID, record.value);
 	}
 
+	~RateLimitedEventHandler() {
+		LOG_DEBUG(L"RateLimitedUIAEventHandler::~RateLimitedUIAEventHandler called");
+	}
+
 public:
 
-	RateLimitedEventHandler(IUnknown* pExistingHandler, std::function<void()> onFirstEvent)
-		: m_onFirstEvent(onFirstEvent), m_refCount(1), m_pExistingAutomationEventHandler(pExistingHandler), m_pExistingFocusChangedEventHandler(pExistingHandler), m_pExistingPropertyChangedEventHandler(pExistingHandler) {
+	RateLimitedEventHandler(IUnknown* pExistingHandler, HWND messageWindow, UINT flushMessage)
+		: m_messageWindow(messageWindow), m_flushMessage(flushMessage), m_refCount(1), m_pExistingAutomationEventHandler(pExistingHandler), m_pExistingFocusChangedEventHandler(pExistingHandler), m_pExistingPropertyChangedEventHandler(pExistingHandler) {
 			LOG_DEBUG(L"RateLimitedUIAEventHandler::RateLimitedUIAEventHandler called");
 		}
 
@@ -259,7 +258,7 @@ public:
 
 };
 
-HRESULT rateLimitedUIAEventHandler_create(IUnknown* pExistingHandler, void(*onFirstEvent)(void), RateLimitedEventHandler** ppRateLimitedEventHandler) {
+HRESULT rateLimitedUIAEventHandler_create(IUnknown* pExistingHandler, HWND messageWindow, UINT flushMessage, RateLimitedEventHandler** ppRateLimitedEventHandler) {
 	LOG_DEBUG(L"rateLimitedUIAEventHandler_create called");
 	if (!pExistingHandler || !ppRateLimitedEventHandler) {
 		LOG_DEBUG(L"rateLimitedUIAEventHandler_create: invalid arguments. Returning");
@@ -267,7 +266,7 @@ HRESULT rateLimitedUIAEventHandler_create(IUnknown* pExistingHandler, void(*onFi
 	}
 
 	// Create the RateLimitedEventHandler instance
-	*ppRateLimitedEventHandler = new RateLimitedEventHandler(pExistingHandler, onFirstEvent);
+	*ppRateLimitedEventHandler = new RateLimitedEventHandler(pExistingHandler, messageWindow, flushMessage);
 	if (!(*ppRateLimitedEventHandler)) {
 		LOG_DEBUG(L"rateLimitedUIAEventHandler_create: Could not create RateLimitedUIAEventHandler. Returning");
 		return E_OUTOFMEMORY;
