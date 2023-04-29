@@ -38,52 +38,67 @@ std::vector<int> getRuntimeIDFromElement(IUIAutomationElement* pElement) {
 	return runtimeID;
 }
 
-class RateLimitedEventHandler;
-
-class EventRecord_t {
-	public:
-	EventRecord_t(const EventRecord_t& other) = delete;
-	EventRecord_t& operator =(const EventRecord_t& other) = delete;
+struct AutomationEventRecord_t {
 	CComPtr<IUIAutomationElement> element;
-	bool isCoalesceable;
-	std::vector<int> coalescingKey;
-	unsigned int coalesceCount = 0;
-	bool forceFlush;
-	EventRecord_t(IUIAutomationElement* pElement, bool isCoAlesceable, bool forceFlush): element(pElement), isCoalesceable(isCoalesceable), forceFlush(forceFlush) {
-		if(isCoalesceable) {
-			coalescingKey = getRuntimeIDFromElement(element);
-		}
-	}
-	bool canCoalesce(const EventRecord_t& other) CONST {
-		return isCoalesceable && other.isCoalesceable && coalescingKey == other.coalescingKey;
-	}
-};
-
-class FocusChangedEventRecord_t: public EventRecord_t {
-	public:
-	FocusChangedEventRecord_t(IUIAutomationElement* pElement): EventRecord_t(pElement, false, true) {
-	}
-};
-
-class AutomationEventRecord_t: public EventRecord_t {
-	public:
 	EVENTID eventID;
-	AutomationEventRecord_t(IUIAutomationElement* pElement, EVENTID eventID): EventRecord_t(pElement, true, false), eventID(eventID) {
-		coalescingKey.push_back(eventID);
+	static const bool forceFlush = false;
+	static const bool isCoalesceable = true;
+	std::vector<int> generateCoalescingKey() const {
+		auto key = getRuntimeIDFromElement(element);
+		key.push_back(eventID);
+		return key;
 	}
 };
 
-class PropertyChangedEventRecord_t: public EventRecord_t {
-	public:
+struct PropertyChangedEventRecord_t {
+	CComPtr<IUIAutomationElement> element;
 	PROPERTYID propertyID;
-	CComVariant value;
-	PropertyChangedEventRecord_t(IUIAutomationElement* pElement, PROPERTYID propertyID, VARIANT value): EventRecord_t(pElement, true, false), propertyID(propertyID), value(value) { 
-		coalescingKey.push_back(UIA_AutomationPropertyChangedEventId);
-		coalescingKey.push_back(propertyID);
+	CComVariant newValue;
+	static const bool forceFlush = false;
+	static const bool isCoalesceable = true;
+	std::vector<int> generateCoalescingKey() const {
+		auto key = getRuntimeIDFromElement(element);
+		key.push_back(UIA_AutomationPropertyChangedEventId);
+		key.push_back(propertyID);
+		return key;
 	}
+};
+
+struct FocusChangedEventRecord_t {
+	CComPtr<IUIAutomationElement> element;
+	static const bool forceFlush = true;
+	static const bool isCoalesceable = false;
 };
 
 using AnyEventRecord_t = std::variant<AutomationEventRecord_t, FocusChangedEventRecord_t, PropertyChangedEventRecord_t>;
+
+template<typename T>
+concept Supports_isCoalesceable = requires(T t) {
+	{ t.isCoalesceable } -> std::same_as<const bool&>;
+};
+
+template<typename T>
+concept Needs_generateCoalescingKey_if_isCoalesceable = !Supports_isCoalesceable<T> || (T::isCoalesceable == false) || requires(T t) {
+	{ t.generateCoalescingKey() } -> std::same_as<std::vector<int>>;
+};
+
+template<typename T>
+concept Supports_forceFlush = requires(T t) {
+	{ t.forceFlush } -> std::same_as<const bool&>;
+};
+
+template<typename T>
+concept OnlyOneOfIsCoalesceableOrNeedsForceFlush = !Supports_isCoalesceable<T> || !Supports_forceFlush<T> || !(T::isCoalesceable == true && T::forceFlush == true);
+
+template<typename T>
+concept EventRecord_t = requires(T t) {
+	requires Supports_isCoalesceable<T>;
+	requires Needs_generateCoalescingKey_if_isCoalesceable<T>;
+	requires Supports_forceFlush<T>;
+	requires OnlyOneOfIsCoalesceableOrNeedsForceFlush<T>;
+	{ t.element } -> std::same_as<CComPtr<IUIAutomationElement>&>;
+	{ AnyEventRecord_t(t)} -> std::same_as<AnyEventRecord_t>;
+};
 
 class RateLimitedEventHandler : public IUIAutomationEventHandler, public IUIAutomationFocusChangedEventHandler, public IUIAutomationPropertyChangedEventHandler {
 private:
@@ -95,9 +110,9 @@ private:
 	UINT m_flushMessage;
 	std::mutex mtx;
 	std::list<AnyEventRecord_t> m_eventRecords;
-	std::map<std::vector<int>, decltype(m_eventRecords)::iterator> m_eventRecordsByKey;
+	std::map<std::vector<int>, std::pair<decltype(m_eventRecords)::iterator, int>> m_eventRecordsByKey;
 
-	template<typename EventRecordClass, typename... EventRecordArgTypes> HRESULT queueEvent(EventRecordArgTypes&&... args) {
+	template<EventRecord_t EventRecordClass, typename... EventRecordArgTypes> HRESULT queueEvent(EventRecordArgTypes&&... args) {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent called");
 		bool needsFlush = false;
 		unsigned int flushTimeMS = 30;
@@ -107,31 +122,27 @@ private:
 				needsFlush = true;
 			}
 			LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Inserting new event");
-			auto& recordVar = m_eventRecords.emplace_back(std::in_place_type_t<EventRecordClass>(),args...);
+			auto& recordVar = m_eventRecords.emplace_back(std::in_place_type_t<EventRecordClass>{}, args...);
 			auto recordVarIter = m_eventRecords.end();
 			recordVarIter--;
 			auto& record = std::get<EventRecordClass>(recordVar);
-			if(record.forceFlush) {
+			if constexpr(EventRecordClass::forceFlush) {
 				needsFlush = true;
 				flushTimeMS = 0;
-			}
-			if(record.isCoalesceable) {
+			} else if constexpr(EventRecordClass::isCoalesceable) {
 				LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Is a coalesceable event");
-				record.coalesceCount += 1;
-				auto existingKeyIter = m_eventRecordsByKey.find(record.coalescingKey);
+				auto coalescingKey = record.generateCoalescingKey();
+				auto existingKeyIter = m_eventRecordsByKey.find(coalescingKey);
 				if(existingKeyIter != m_eventRecordsByKey.end()) {
 					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: found existing event with same key"); 
-					auto existingRecordVarIter = existingKeyIter->second;
-					std::visit([&](EventRecord_t& existingRecord) {
-						record.coalesceCount += existingRecord.coalesceCount;
-					}, *existingRecordVarIter);
+					auto& [existingRecordVarIter,existingCoalesceCount] = existingKeyIter->second;
 					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: updating key");
-					existingKeyIter->second = recordVarIter;
+					existingKeyIter->second = {recordVarIter, existingCoalesceCount + 1};
 					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: erasing old item"); 
 					m_eventRecords.erase(existingRecordVarIter);
 				} else {
 					LOG_DEBUG(L"RateLimitedUIAEventHandler::queueEvent: Adding key");
-					m_eventRecordsByKey.insert_or_assign(record.coalescingKey, recordVarIter);
+					m_eventRecordsByKey.insert_or_assign(coalescingKey, std::pair(recordVarIter, 1));
 				}
 			}
 		}
@@ -154,7 +165,7 @@ private:
 
 	HRESULT emitEvent(const PropertyChangedEventRecord_t& record) const {
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::emitPropertyChangedEvent called");
-		return m_pExistingPropertyChangedEventHandler->HandlePropertyChangedEvent(record.element, record.propertyID, record.value);
+		return m_pExistingPropertyChangedEventHandler->HandlePropertyChangedEvent(record.element, record.propertyID, record.newValue);
 	}
 
 	~RateLimitedEventHandler() {
@@ -247,9 +258,6 @@ public:
 		LOG_DEBUG(L"RateLimitedUIAEventHandler::flush: Emitting events...");
 		for(const auto& recordVar: eventRecordsCopy) {
 			std::visit([this](const auto& record) {
-				if(record.coalesceCount > 1) {
-					// Beep(440 + (record.coalesceCount), 40);
-				}
 				this->emitEvent(record);
 			}, recordVar);
 		}
