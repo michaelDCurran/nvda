@@ -585,13 +585,13 @@ class UIAHandler(COMObject):
 			self.globalEventHandlerGroup.AddNotificationEventHandler(
 				UIA.TreeScope_Subtree,
 				self.baseCacheRequest,
-				self
+				self.pRateLimitedEventHandler
 			)
 		if isinstance(self.clientObject, UIA.IUIAutomation6):
 			self.globalEventHandlerGroup.AddActiveTextPositionChangedEventHandler(
 				UIA.TreeScope_Subtree,
 				self.baseCacheRequest,
-				self
+				self.pRateLimitedEventHandler
 			)
 		self.addEventHandlerGroup(self.rootElement, self.globalEventHandlerGroup)
 
@@ -706,8 +706,8 @@ class UIAHandler(COMObject):
 		self.MTAThreadQueue.put_nowait(func)
 
 	def IUIAutomationEventHandler_HandleAutomationEvent(self,sender,eventID):
-		if _isDebug():
-			log.debug(
+		if True: #_isDebug():
+			log.info(
 				f"handleAutomationEvent called with event {self.getUIAEventIDDebugString(eventID)} "
 				f"for element {self.getUIAElementDebugString(sender)}"
 			)
