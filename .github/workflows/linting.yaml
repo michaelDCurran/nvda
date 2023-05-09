@@ -2,18 +2,18 @@ name: linting
 on: pull_request
 
 jobs:
-	checkLinting:
-		runs-on: windows-latest
-			strategy:
-				matrix:
-					python-version: [3.7]
-				steps:
-					- name: Install dependencies
-						run: |
-							python -m pip install flake8~=3.7.7 flake8-tabs == 2.1.0
-					- name: generate diff
-						run: |
-							git diff -U0 ${GITHUB_BASE_REF} >_lint.diff
-						- name: Run flake8
-						run: |
-							py -Xutf8 -m flake8 --diff --config=tests/lint/flake8.ini <_lint.diff
+ checkLinting:
+  runs-on: windows-latest
+   strategy:
+    matrix:
+     python-version: [3.7]
+    steps:
+     - name: Install dependencies
+      run: |
+       python -m pip install flake8~=3.7.7 flake8-tabs == 2.1.0
+     - name: generate diff
+      run: |
+       git diff -U0 ${GITHUB_BASE_REF} >_lint.diff
+      - name: Run flake8
+      run: |
+       py -Xutf8 -m flake8 --diff --config=tests/lint/flake8.ini <_lint.diff
