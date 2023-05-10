@@ -19,7 +19,7 @@ jobs:
         python -m pip install flake8~=3.7.7 flake8-tabs==2.1.0
     - name: generate diff
       run: |
-        git diff -U0 ${{ github.event.pull_request.base.sha }} >_lint.diff
+        git diff -U0 ${{ github.event.pull_request.base.sha }} | Out-File -FilePath _lint.diff
     - name: Run flake8
       run: |
-        py -Xutf8 -m flake8 --diff --config=tests/lint/flake8.ini <_lint.diff
+        Get-Content -Path _lint.diff | py -Xutf8 -m flake8 --diff --config=tests/lint/flake8.ini
