@@ -183,6 +183,46 @@ class UIATextInfo(textInfos.TextInfo):
 			return True
 		return False
 
+	def getRequiredUIATextAttributeIDs(self, formatConfig: Dict) -> set[int]:
+		IDs = set()
+		if formatConfig["reportFontName"]:
+			IDs.add(UIAHandler.UIA_FontNameAttributeId)
+		if formatConfig["reportFontSize"]:
+			IDs.add(UIAHandler.UIA_FontSizeAttributeId)
+		if formatConfig["fontAttributeReporting"]:
+			IDs.add(UIAHandler.UIA_FontWeightAttributeId)
+			IDs.add(UIAHandler.UIA_IsItalicAttributeId)
+			IDs.add(UIAHandler.UIA_UnderlineStyleAttributeId)
+			IDs.add(UIAHandler.UIA_StrikethroughStyleAttributeId)
+		if formatConfig["reportSuperscriptsAndSubscripts"]:
+			IDs.add(UIAHandler.UIA_IsSuperscriptAttributeId)
+			IDs.add(UIAHandler.UIA_IsSubscriptAttributeId)
+		if formatConfig["reportParagraphIndentation"]:
+			IDs.update(set(paragraphIndentIDs))
+		if formatConfig["reportAlignment"]:
+			IDs.add(UIAHandler.UIA_HorizontalTextAlignmentAttributeId)
+		if formatConfig["reportColor"]:
+			IDs.add(UIAHandler.UIA_BackgroundColorAttributeId)
+			IDs.add(UIAHandler.UIA_ForegroundColorAttributeId)
+		if formatConfig["reportLineSpacing"]:
+			IDs.add(UIAHandler.UIA_LineSpacingAttributeId)
+		if formatConfig["reportLinks"]:
+			IDs.add(UIAHandler.UIA_LinkAttributeId)
+		if formatConfig["reportStyle"]:
+			IDs.add(UIAHandler.UIA_StyleNameAttributeId)
+		if formatConfig["reportHeadings"]:
+			IDs.add(UIAHandler.UIA_StyleIdAttributeId)
+		fetchAnnotationTypes = (
+			formatConfig["reportSpellingErrors"]
+			or formatConfig["reportComments"]
+			or formatConfig["reportRevisions"]
+			or formatConfig["reportBookmarks"]
+		)
+		if fetchAnnotationTypes:
+			IDs.add(UIAHandler.UIA_AnnotationTypesAttributeId)
+		IDs.add(UIAHandler.UIA_CultureAttributeId)
+		return IDs
+
 	def _getFormatFieldFontName(self, fetch: Callable[[int], int], formatField: textInfos.FormatField):
 		val = fetch(UIAHandler.UIA_FontNameAttributeId)
 		if val != UIAHandler.handler.reservedNotSupportedValue:
@@ -348,73 +388,7 @@ class UIATextInfo(textInfos.TextInfo):
 				log.debugWarning("language error", exc_info=True)
 				pass
 
-	def _getFormatFieldAtRange(  # noqa: C901
-		self,
-		textRange: IUIAutomationTextRangeT,
-		formatConfig: Dict,
-		ignoreMixedValues: bool = False,
-	) -> textInfos.FormatField:
-		"""
-		Fetches formatting for the given UI Automation Text range.
-		@param textRange: the text range whos formatting should be fetched.
-		@param formatConfig: the types of formatting requested.
-		@type formatConfig: a dictionary of NVDA document formatting configuration keys
-			with values set to true for those types that should be fetched.
-		@param ignoreMixedValues: If True, formatting that is mixed according to UI Automation will not be included.
-			If False, L{UIAHandler.utils.MixedAttributeError} will be raised if UI Automation gives back
-			a mixed attribute value signifying that the caller may want to try again with a smaller range.
-		@return: The formatting for the given text range.
-		"""
-		if not isinstance(textRange, UIAHandler.IUIAutomationTextRange):
-			raise ValueError("%s is not a text range" % textRange)
-		fetchAnnotationTypes = (
-			formatConfig["reportSpellingErrors"]
-			or formatConfig["reportComments"]
-			or formatConfig["reportRevisions"]
-			or formatConfig["reportBookmarks"]
-		)
-		try:
-			textRange = textRange.QueryInterface(UIAHandler.IUIAutomationTextRange3)
-		except (COMError, AttributeError):
-			fetcher = UIATextRangeAttributeValueFetcher(textRange)
-		else:
-			# Precalculate all the IDs we could possibly need so that they can be fetched in one cross-process call where supported
-			IDs = set()
-			if formatConfig["reportFontName"]:
-				IDs.add(UIAHandler.UIA_FontNameAttributeId)
-			if formatConfig["reportFontSize"]:
-				IDs.add(UIAHandler.UIA_FontSizeAttributeId)
-			if formatConfig["fontAttributeReporting"]:
-				IDs.add(UIAHandler.UIA_FontWeightAttributeId)
-				IDs.add(UIAHandler.UIA_IsItalicAttributeId)
-				IDs.add(UIAHandler.UIA_UnderlineStyleAttributeId)
-				IDs.add(UIAHandler.UIA_StrikethroughStyleAttributeId)
-			if formatConfig["reportSuperscriptsAndSubscripts"]:
-				IDs.add(UIAHandler.UIA_IsSuperscriptAttributeId)
-				IDs.add(UIAHandler.UIA_IsSubscriptAttributeId)
-			if formatConfig["reportParagraphIndentation"]:
-				IDs.update(set(paragraphIndentIDs))
-			if formatConfig["reportAlignment"]:
-				IDs.add(UIAHandler.UIA_HorizontalTextAlignmentAttributeId)
-			if formatConfig["reportColor"]:
-				IDs.add(UIAHandler.UIA_BackgroundColorAttributeId)
-				IDs.add(UIAHandler.UIA_ForegroundColorAttributeId)
-			if formatConfig["reportLineSpacing"]:
-				IDs.add(UIAHandler.UIA_LineSpacingAttributeId)
-			if formatConfig["reportLinks"]:
-				IDs.add(UIAHandler.UIA_LinkAttributeId)
-			if formatConfig["reportStyle"]:
-				IDs.add(UIAHandler.UIA_StyleNameAttributeId)
-			if formatConfig["reportHeadings"]:
-				IDs.add(UIAHandler.UIA_StyleIdAttributeId)
-			if fetchAnnotationTypes:
-				IDs.add(UIAHandler.UIA_AnnotationTypesAttributeId)
-			IDs.add(UIAHandler.UIA_CultureAttributeId)
-			fetcher = BulkUIATextRangeAttributeValueFetcher(textRange, IDs)
-
-		def fetch(id):
-			return fetcher.getValue(id, ignoreMixedValues=ignoreMixedValues)
-
+	def _getFormatField(self, formatConfig: dict, fetch: Callable[[int], int]) -> textInfos.FormatField:
 		formatField = textInfos.FormatField()
 		if formatConfig["reportFontName"]:
 			self._getFormatFieldFontName(fetch, formatField)
@@ -438,9 +412,50 @@ class UIATextInfo(textInfos.TextInfo):
 			self._getFormatFieldLinks(fetch, formatField)
 		if formatConfig["reportHeadings"]:
 			self._getFormatFieldHeadings(fetch, formatField)
+
+		fetchAnnotationTypes = (
+			formatConfig["reportSpellingErrors"]
+			or formatConfig["reportComments"]
+			or formatConfig["reportRevisions"]
+			or formatConfig["reportBookmarks"]
+		)
 		if fetchAnnotationTypes:
 			self._getFormatFieldAnnotationTypes(fetch, formatField, formatConfig)
 		self._getFormatFieldCulture(fetch, formatField)
+		return formatField
+
+	def _getFormatFieldAtRange(  # noqa: C901
+		self,
+		textRange: IUIAutomationTextRangeT,
+		formatConfig: Dict,
+		ignoreMixedValues: bool = False,
+	) -> textInfos.FormatField:
+		"""
+		Fetches formatting for the given UI Automation Text range.
+		@param textRange: the text range whos formatting should be fetched.
+		@param formatConfig: the types of formatting requested.
+		@type formatConfig: a dictionary of NVDA document formatting configuration keys
+			with values set to true for those types that should be fetched.
+		@param ignoreMixedValues: If True, formatting that is mixed according to UI Automation will not be included.
+			If False, L{UIAHandler.utils.MixedAttributeError} will be raised if UI Automation gives back
+			a mixed attribute value signifying that the caller may want to try again with a smaller range.
+		@return: The formatting for the given text range.
+		"""
+		if not isinstance(textRange, UIAHandler.IUIAutomationTextRange):
+			raise ValueError("%s is not a text range" % textRange)
+		try:
+			textRange = textRange.QueryInterface(UIAHandler.IUIAutomationTextRange3)
+		except (COMError, AttributeError):
+			fetcher = UIATextRangeAttributeValueFetcher(textRange)
+		else:
+			# Precalculate all the IDs we could possibly need so that they can be fetched in one cross-process call where supported
+			IDs = self.getRequiredUIATextAttributeIDs(formatConfig)
+			fetcher = BulkUIATextRangeAttributeValueFetcher(textRange, IDs)
+
+		def fetch(id):
+			return fetcher.getValue(id, ignoreMixedValues=ignoreMixedValues)
+
+		formatField = self._getFormatField(formatConfig, fetch)
 		return textInfos.FieldCommand("formatChange", formatField)
 
 	def _getIndentValueDisplayString(self, val: float) -> str:
