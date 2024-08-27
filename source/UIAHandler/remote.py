@@ -25,6 +25,7 @@ from ._remoteOps.lowLevel import (
 	TextUnit,
 	AttributeId,
 	StyleId,
+	PropertyId,
 )
 
 
@@ -179,3 +180,50 @@ def findFirstHeadingInTextRange(
 		cast(str, label),
 		cast(UIA.IUIAutomationTextRange, paragraphRange),
 	)
+
+def collectAllDataForTextRange(
+	textRange: UIA.IUIAutomationTextRange,
+	neededProperties: list[int],
+	neededAttributes: list[int],
+	rootElement: UIA.IUIAutomationElement,
+) -> Generator[tuple[str, list[Any], list[UIA.IUIAutomationElement]], None, None]:
+	op = operation.Operation(enableCompiletimeLogging=False)
+
+	@op.buildIterableFunction
+	def code(ra: remoteAPI.RemoteAPI):
+		remoteTextRange = ra.newTextRange(textRange, static=True)
+		remoteRootElement = ra.newElement(rootElement)
+		remoteRootElementId = remoteRootElement.getPropertyValue(PropertyId.RuntimeId).stringify()
+		remotecacheRequest = ra.newCacheRequest()
+		for propertyId in neededProperties:
+			remotecacheRequest.addProperty(propertyId)
+		with remoteAlgorithms.remote_forEachUnitInTextRange(
+			ra,
+			remoteTextRange,
+			TextUnit.Format,
+		) as formatRange:
+			text = formatRange.getText(-1)
+			logicalFormatRange = formatRange.getLogicalAdapter(reverse=False)
+			logicalFormatRange.end = logicalFormatRange.start
+			logicalFormatRange.textRange.expandToEnclosingUnit(TextUnit.Character)
+			remoteAttributes = ra.newArray()
+			for attributeId in neededAttributes:
+				val = formatRange.getAttributeValue(attributeId)
+				remoteAttributes.append(val)
+			remoteAncestors = ra.newArray()
+			remoteElement = formatRange.getEnclosingElement()
+			with ra.whileBlock(lambda: remoteElement.isNull().inverse()):
+				remoteElement.populateCache(remotecacheRequest)
+				remoteAncestors.append(remoteElement)
+				remoteElementId = remoteElement.getPropertyValue(PropertyId.RuntimeId).stringify()
+				with ra.ifBlock(remoteElementId == remoteRootElementId):
+					ra.breakLoop()
+				remoteParentElement = remoteElement.getParentElement()
+				remoteElement.set(remoteParentElement)
+			ra.Yield(text, remoteAttributes, remoteAncestors)
+
+	for text, attributes, ancestors in op.iterExecute(maxTries=100):
+		text = cast(str, text)
+		attributes = cast(list[Any], attributes)
+		ancestors = cast(list[UIA.IUIAutomationElement], ancestors)
+		yield text, attributes, ancestors

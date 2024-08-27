@@ -16,6 +16,7 @@ from typing import (
 	Tuple,
 	Callable,
 )
+from itertools import zip_longest
 import array
 from ctypes.wintypes import POINT
 from comtypes import COMError
@@ -47,6 +48,9 @@ from UIAHandler.utils import (
 	UIATextRangeFromElement,
 	_shouldUseWindowsTerminalNotifications,
 )
+import UIAHandler.remote
+from UIAHandler._remoteOps.lowLevel import PropertyId as UIAPropertyId
+from UIAHandler._remoteOps.lowLevel import AttributeId as UIATextAttributeId
 from NVDAObjects.window import Window
 from NVDAObjects import (
 	NVDAObject,
@@ -132,6 +136,7 @@ class UIATextInfo(textInfos.TextInfo):
 		UIAHandler.UIA_AriaPropertiesPropertyId,
 		UIAHandler.UIA_LevelPropertyId,
 		UIAHandler.UIA_IsEnabledPropertyId,
+		UIAHandler.UIA_IsDialogPropertyId,
 	}
 
 	def _get__controlFieldUIACacheRequest(self):
@@ -1043,7 +1048,52 @@ class UIATextInfo(textInfos.TextInfo):
 		if debug:
 			log.debug("_getTextWithFieldsForUIARange end")
 
+	def _getTextWithFields_win11(self, textRange: IUIAutomationTextRangeT, formatConfig: Dict) -> Generator[textInfos.FieldCommand, None, None]:
+		textList = []
+		prevAncestors = []
+		requiredPropertyIds = [
+			UIAPropertyId(x) for x in (UIAHandler.baseCachePropertyIDs | self._controlFieldUIACachedPropertyIDs)
+		]
+		requiredAttributeIds = [
+			UIATextAttributeId(x) for x in self.getRequiredUIATextAttributeIDs(formatConfig)
+		]
+		controlFieldStack = []
+		import time
+		startTime = time.time()
+		data = UIAHandler.remote.collectAllDataForTextRange(
+			self._rangeObj,
+			requiredPropertyIds,
+			requiredAttributeIds,
+			self.obj.UIAElement
+		)
+		data = list(data)
+		print("Time to collect data: %s" % (time.time() - startTime))
+		for text, attribValues, ancestors in data:
+			for prevAncestor, ancestor in zip_longest(reversed(prevAncestors), reversed(ancestors)):
+				prevAncestorId = prevAncestor.GetCachedPropertyValue(UIAPropertyId.RuntimeId) if prevAncestor else None
+				ancestorId = ancestor.GetCachedPropertyValue(UIAPropertyId.RuntimeId) if ancestor else None
+				if prevAncestorId != ancestorId:
+					if prevAncestorId:
+						controlField = controlFieldStack.pop()
+						yield textInfos.FieldCommand("controlEnd", controlField)
+					if ancestorId:
+						obj = UIA(UIAElement=ancestor, windowHandle=self.obj.windowHandle, initialUIACachedPropertyIDs=requiredPropertyIds)
+						controlField = self._getControlFieldForUIAObject(obj)
+						controlFieldStack.append(controlField)
+						yield textInfos.FieldCommand("controlStart", controlField)
+			attribsMap = {requiredAttributeIds[i]: attribValues[i] for i in range(len(requiredAttributeIds))}
+			formatField = self._getFormatField(formatConfig, attribsMap.get)
+			yield textInfos.FieldCommand("formatChange", formatField)
+			yield text
+			prevAncestors = ancestors
+
+
 	def getTextWithFields(self, formatConfig: Optional[Dict] = None) -> textInfos.TextInfo.TextWithFieldsT:
+		import time
+		startTime = time.time()
+		fields = list(self._getTextWithFields_win11(self._rangeObj, formatConfig))
+		print("Time to get fields: %s" % (time.time() - startTime))
+		return fields
 		if not formatConfig:
 			formatConfig = config.conf["documentFormatting"]
 		fields = list(self._getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
@@ -1172,6 +1222,7 @@ class UIA(Window):
 			value = cacheElement.getCachedPropertyValueEx(ID, ignoreDefault)
 		else:
 			# The value is cached nowhere, so ask the UIAElement for its current value for the property
+			print(f"Fetching value for {ID}")
 			value = self.UIAElement.getCurrentPropertyValueEx(ID, ignoreDefault)
 		return value
 
