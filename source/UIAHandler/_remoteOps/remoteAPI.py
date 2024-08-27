@@ -38,6 +38,7 @@ from .remoteTypes import (
 	RemoteArray,
 	RemoteElement,
 	RemoteTextRange,
+	RemoteCacheRequest,
 )
 
 
@@ -133,6 +134,9 @@ class RemoteAPI(builder._RemoteBase):
 
 	def newArray(self) -> RemoteArray:
 		return RemoteArray.createNew(self.rob)
+
+	def newCacheRequest(self) -> RemoteCacheRequest:
+		return RemoteCacheRequest.createNew(self.rob)
 
 	def newElement(
 		self,

@@ -56,6 +56,12 @@ from .element import (
 	IsElement,
 	ElementGetPropertyValue,
 	ElementNavigate,
+	ElementPopulateCache,
+)
+from . cacheRequest import (
+	NewCacheRequest,
+	IsCacheRequest,
+	CacheRequestAddProperty,
 )
 from .extension import (
 	IsExtensionSupported,

@@ -93,3 +93,13 @@ class RemoteElement(RemoteExtensionTarget[POINTER(UIA.IUIAutomationElement)]):
 	@remoteMethod
 	def getPreviousSiblingElement(self) -> RemoteElement:
 		return self._navigate(lowLevel.NavigationDirection.PreviousSibling)
+
+	@remoteMethod
+	def populateCache(self, request: RemoteCacheRequest) -> RemoteElement:
+		self.rob.getDefaultInstructionList().addInstruction(
+			instructions.ElementPopulateCache(
+				target=self,
+				request=request,
+			),
+		)
+		return self

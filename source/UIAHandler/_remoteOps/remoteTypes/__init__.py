@@ -735,3 +735,4 @@ from .intEnum import RemoteIntEnum
 from .extensionTarget import RemoteExtensionTarget
 from .element import RemoteElement
 from .textRange import RemoteTextRange
+from .cacheRequest import RemoteCacheRequest

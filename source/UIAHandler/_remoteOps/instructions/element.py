@@ -77,3 +77,16 @@ class ElementNavigate(_TypedInstruction):
 				registers[self.result.operandId] = treeWalker.GetPreviousSiblingElement(element)
 			case _:
 				raise ValueError(f"Unknown navigation direction {direction}")
+
+
+@dataclass
+class ElementPopulateCache(_TypedInstruction):
+	opCode = lowLevel.InstructionType.PopulateCache
+	target: builder.Operand
+	request: builder.Operand
+
+	def localExecute(self, registers: dict[lowLevel.OperandId, object]):
+		element = cast(UIA.IUIAutomationElement, registers[self.target.operandId])
+		request = cast(UIA.IUIAutomationCacheRequest, registers[self.request.operandId])
+		registers[self.target.operandId] = element.BuildUpdatedCache(request)
+
