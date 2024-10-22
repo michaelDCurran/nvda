@@ -1058,16 +1058,12 @@ class UIATextInfo(textInfos.TextInfo):
 			UIATextAttributeId(x) for x in self.getRequiredUIATextAttributeIDs(formatConfig)
 		]
 		controlFieldStack = []
-		import time
-		startTime = time.time()
 		data = UIAHandler.remote.collectAllDataForTextRange(
 			self._rangeObj,
 			requiredPropertyIds,
 			requiredAttributeIds,
 			self.obj.UIAElement
 		)
-		data = list(data)
-		print("Time to collect data: %s" % (time.time() - startTime))
 		for text, attribValues, ancestors in data:
 			for prevAncestor, ancestor in zip_longest(reversed(prevAncestors), reversed(ancestors)):
 				prevAncestorId = prevAncestor.GetCachedPropertyValue(UIAPropertyId.RuntimeId) if prevAncestor else None
