@@ -62,6 +62,7 @@ baseCachePropertyIDs = {
 	UIA.UIA_ControlTypePropertyId,
 	UIA.UIA_ProviderDescriptionPropertyId,
 	UIA.UIA_ProcessIdPropertyId,
+	UIA.UIA_NativeWindowHandlePropertyId,
 	UIA.UIA_IsTextPatternAvailablePropertyId,
 	UIA.UIA_IsContentElementPropertyId,
 	UIA.UIA_IsControlElementPropertyId,
