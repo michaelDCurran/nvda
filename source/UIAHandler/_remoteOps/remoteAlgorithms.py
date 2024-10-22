@@ -33,7 +33,7 @@ def remote_forEachUnitInTextRange(
 		endDelta = logicalTempRange.end.compareWith(logicalTextRange.end)
 		with ra.ifBlock((unitsMoved == 0) | (endDelta > 0)):
 			logicalTempRange.end = logicalTextRange.end
-		yield logicalTempRange.textRange
+		yield logicalTempRange.textRange.clone()
 		logicalTextRange.start = logicalTempRange.end
 		with ra.ifBlock((unitsMoved == 0) | (endDelta >= 0)):
 			ra.breakLoop()
