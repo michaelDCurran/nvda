@@ -90,3 +90,18 @@ class ElementPopulateCache(_TypedInstruction):
 		request = cast(UIA.IUIAutomationCacheRequest, registers[self.request.operandId])
 		registers[self.target.operandId] = element.BuildUpdatedCache(request)
 
+
+@dataclass
+class ElementGetTextPattern(_TypedInstruction):
+	opCode = lowLevel.InstructionType.ElementGetTextPattern
+	result: builder.Operand
+	target: builder.Operand
+
+	def localExecute(self, registers: dict[lowLevel.OperandId, object]):
+		element = cast(UIA.IUIAutomationElement, registers[self.target.operandId])
+		textPattern = element.GetCurrentPattern(
+			UIA.UIA_TextPatternId,
+		)
+		if textPattern:
+			textPattern = textPattern.QueryInterface(UIA.IUIAutomationTextPattern)
+		registers[self.result.operandId] = textPattern

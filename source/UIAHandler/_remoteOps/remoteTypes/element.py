@@ -103,3 +103,16 @@ class RemoteElement(RemoteExtensionTarget[POINTER(UIA.IUIAutomationElement)]):
 			),
 		)
 		return self
+
+	@remoteMethod
+	def getTextPattern(self) -> RemoteTextPattern:
+		result = RemoteTextPattern(self.rob, self.rob.requestNewOperandId())
+		self.rob.getDefaultInstructionList().addInstruction(
+			instructions.ElementGetTextPattern(
+				result=result,
+				target=self,
+			),
+		)
+		return result
+
+from .textPattern import RemoteTextPattern

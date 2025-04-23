@@ -66,6 +66,7 @@ from .element import (
 	ElementGetPropertyValue,
 	ElementNavigate,
 	ElementPopulateCache,
+	ElementGetTextPattern,
 )
 from . cacheRequest import (
 	NewCacheRequest,
@@ -122,4 +123,7 @@ from .textRange import (
 	TextRangeExpandToEnclosingUnit,
 	TextRangeMoveEndpointByRange,
 	TextRangeCompareEndpoints,
+)
+from .textPattern import (
+	TextPatternRangeFromChild,
 )
