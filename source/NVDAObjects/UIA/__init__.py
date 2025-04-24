@@ -1050,7 +1050,7 @@ class UIATextInfo(textInfos.TextInfo):
 
 	def _getTextWithFields_win11(self, textRange: IUIAutomationTextRangeT, formatConfig: Dict) -> Generator[textInfos.FieldCommand, None, None]:
 		textList = []
-		prevAncestors = []
+		prevAncestorIds = []
 		requiredPropertyIds = [
 			UIAPropertyId(x) for x in (UIAHandler.baseCachePropertyIDs | self._controlFieldUIACachedPropertyIDs)
 		]
@@ -1064,24 +1064,37 @@ class UIATextInfo(textInfos.TextInfo):
 			requiredAttributeIds,
 			self.obj.UIAElement
 		)
-		for text, attribValues, ancestors in data:
-			for prevAncestor, ancestor in zip_longest(reversed(prevAncestors), reversed(ancestors)):
-				prevAncestorId = prevAncestor.GetCachedPropertyValue(UIAPropertyId.RuntimeId) if prevAncestor else None
-				ancestorId = ancestor.GetCachedPropertyValue(UIAPropertyId.RuntimeId) if ancestor else None
+		elementMap = {}
+
+		for record in data:
+			if isinstance(record, dict):
+				elementMap.update(record)
+				continue
+			text, attribValues, deepestElementId = record
+			ancestorIds = []
+			elementId = deepestElementId
+			while elementId:
+				elementInfo = elementMap[elementId]
+				ancestorIds.append(elementId)
+				elementId = elementInfo.get("parentElementId")
+			for prevAncestorId, ancestorId in zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)):
 				if prevAncestorId != ancestorId:
 					if prevAncestorId:
 						controlField = controlFieldStack.pop()
 						yield textInfos.FieldCommand("controlEnd", controlField)
+			for prevAncestorId, ancestorId in zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)):
+				if prevAncestorId != ancestorId:
 					if ancestorId:
-						obj = UIA(UIAElement=ancestor, windowHandle=self.obj.windowHandle, initialUIACachedPropertyIDs=requiredPropertyIds)
-						controlField = self._getControlFieldForUIAObject(obj)
+						ancestorInfo = elementMap[ancestorId]
+						obj = UIA(UIAElement=ancestorInfo['element'], windowHandle=self.obj.windowHandle, initialUIACachedPropertyIDs=requiredPropertyIds)
+						controlField = self._getControlFieldForUIAObject(obj, startOfNode=not ancestorInfo['clippedStart'], endOfNode=not ancestorInfo['clippedEnd'])
 						controlFieldStack.append(controlField)
 						yield textInfos.FieldCommand("controlStart", controlField)
 			attribsMap = {requiredAttributeIds[i]: attribValues[i] for i in range(len(requiredAttributeIds))}
 			formatField = self._getFormatField(formatConfig, attribsMap.get)
 			yield textInfos.FieldCommand("formatChange", formatField)
 			yield text
-			prevAncestors = ancestors
+			prevAncestorIds = ancestorIds
 
 
 	def getTextWithFields(self, formatConfig: Optional[Dict] = None) -> textInfos.TextInfo.TextWithFieldsT:
@@ -1218,7 +1231,7 @@ class UIA(Window):
 			value = cacheElement.getCachedPropertyValueEx(ID, ignoreDefault)
 		else:
 			# The value is cached nowhere, so ask the UIAElement for its current value for the property
-			print(f"Fetching value for {ID}")
+			log.warning(f"Fetching value for {ID}", stack_info=True)
 			value = self.UIAElement.getCurrentPropertyValueEx(ID, ignoreDefault)
 		return value
 

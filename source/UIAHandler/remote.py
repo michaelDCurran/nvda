@@ -182,48 +182,60 @@ def findFirstHeadingInTextRange(
 	)
 
 def collectAllDataForTextRange(
-	textRange: UIA.IUIAutomationTextRange,
-	neededProperties: list[int],
-	neededAttributes: list[int],
-	rootElement: UIA.IUIAutomationElement,
+	arg_textRange: UIA.IUIAutomationTextRange,
+	arg_neededProperties: list[int],
+	arg_neededAttributes: list[int],
+	arg_rootElement: UIA.IUIAutomationElement,
 ) -> Generator[tuple[str, list[Any], list[UIA.IUIAutomationElement]], None, None]:
-	op = operation.Operation(enableCompiletimeLogging=False)
+	op = operation.Operation(enableCompiletimeLogging=False, localMode=False)
 
 	@op.buildIterableFunction
 	def code(ra: remoteAPI.RemoteAPI):
-		remoteTextRange = ra.newTextRange(textRange, static=True)
-		remoteRootElement = ra.newElement(rootElement)
-		remoteRootElementId = remoteRootElement.getPropertyValue(PropertyId.RuntimeId).stringify()
-		remotecacheRequest = ra.newCacheRequest()
-		for propertyId in neededProperties:
-			remotecacheRequest.addProperty(propertyId)
+		logicalFullTextRange = ra.newTextRange(arg_textRange).getLogicalAdapter()
+		rootElement = ra.newElement(arg_rootElement)
+		textPattern = rootElement.getTextPattern()
+		rootElementId = rootElement.getPropertyValue(PropertyId.RuntimeId).stringify()
+		cacheRequest = ra.newCacheRequest()
+		for propertyId in arg_neededProperties:
+			cacheRequest.addProperty(propertyId)
+		elementMap = ra.newStringMap()
+		ra.Yield(elementMap)
+		walkingTextRange = ra.newTextRange(arg_textRange, static=True)
 		with remoteAlgorithms.remote_forEachUnitInTextRange(
 			ra,
-			remoteTextRange,
+			walkingTextRange,
 			TextUnit.Format,
 		) as formatRange:
 			text = formatRange.getText(-1)
 			logicalFormatRange = formatRange.getLogicalAdapter(reverse=False)
 			logicalFormatRange.end = logicalFormatRange.start
 			logicalFormatRange.textRange.expandToEnclosingUnit(TextUnit.Character)
-			remoteAttributes = ra.newArray()
-			for attributeId in neededAttributes:
+			attributes = ra.newArray()
+			for attributeId in arg_neededAttributes:
 				val = formatRange.getAttributeValue(attributeId)
-				remoteAttributes.append(val)
-			remoteAncestors = ra.newArray()
-			remoteElement = formatRange.getEnclosingElement()
-			with ra.whileBlock(lambda: remoteElement.isNull().inverse()):
-				remoteElement.populateCache(remotecacheRequest)
-				remoteAncestors.append(remoteElement)
-				remoteElementId = remoteElement.getPropertyValue(PropertyId.RuntimeId).stringify()
-				with ra.ifBlock(remoteElementId == remoteRootElementId):
+				attributes.append(val)
+			Element = formatRange.getEnclosingElement()
+			elementId = Element.getPropertyValue(PropertyId.RuntimeId).stringify()
+			deepestRemoteElementId = elementId.copy()
+			with ra.whileBlock(lambda: Element.isNull().inverse()):
+				with ra.ifBlock(elementMap.hasKey(elementId)):
 					ra.breakLoop()
-				remoteParentElement = remoteElement.getParentElement()
-				remoteElement.set(remoteParentElement)
-			ra.Yield(text, remoteAttributes, remoteAncestors)
+				Element.populateCache(cacheRequest)
+				elementInfo = ra.newStringMap()
+				elementMap[elementId] = elementInfo
+				elementInfo['element'] = Element
+				logicalChildRange = textPattern.rangeFromChild(Element).getLogicalAdapter()
+				clippedStart = logicalChildRange.start < logicalFullTextRange.start
+				elementInfo['clippedStart'] = clippedStart
+				clippedEnd = logicalChildRange.end > logicalFullTextRange.end
+				elementInfo['clippedEnd'] = clippedEnd
+				with ra.ifBlock(elementId == rootElementId):
+					ra.breakLoop()
+				parentElement = Element.getParentElement()
+				Element.set(parentElement)
+				with ra.ifBlock(Element.isNull().inverse()):
+					elementId.set(Element.getPropertyValue(PropertyId.RuntimeId).stringify())
+					elementInfo['parentElementId'] = elementId
+			ra.Yield(text, attributes, deepestRemoteElementId)
 
-	for text, attributes, ancestors in op.iterExecute(maxTries=100):
-		text = cast(str, text)
-		attributes = cast(list[Any], attributes)
-		ancestors = cast(list[UIA.IUIAutomationElement], ancestors)
-		yield text, attributes, ancestors
+	yield from op.iterExecute(maxTries=100)
