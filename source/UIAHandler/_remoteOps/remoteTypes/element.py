@@ -11,6 +11,9 @@ from typing import (
 from ctypes import (
 	POINTER,
 )
+from comtypes import (
+	GUID,
+)
 from UIAHandler import UIA
 from .. import lowLevel
 from .. import instructions
@@ -22,6 +25,7 @@ from . import (
 	RemoteIntEnum,
 	RemoteBool,
 	RemoteVariant,
+	RemoteGuid,
 )
 
 
@@ -58,6 +62,23 @@ class RemoteElement(RemoteExtensionTarget[POINTER(UIA.IUIAutomationElement)]):
 				result=result,
 				target=self,
 				propertyId=RemoteIntEnum.ensureRemote(self.rob, propertyId),
+				ignoreDefault=RemoteBool.ensureRemote(self.rob, ignoreDefault),
+			),
+		)
+		return result
+
+	@remoteMethod
+	def getCustomPropertyValue(
+		self,
+		propertyId: RemoteGuid | GUID,
+		ignoreDefault: RemoteBool | bool = False,
+	) -> RemoteVariant:
+		result = RemoteVariant(self.rob, self.rob.requestNewOperandId())
+		self.rob.getDefaultInstructionList().addInstruction(
+			instructions.ElementGetPropertyValue(
+				result=result,
+				target=self,
+				propertyId=RemoteGuid.ensureRemote(self.rob, propertyId).lookupId(lowLevel.AutomationIdentifierType.Property),
 				ignoreDefault=RemoteBool.ensureRemote(self.rob, ignoreDefault),
 			),
 		)
