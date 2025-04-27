@@ -229,6 +229,7 @@ elif certFile:
 # architecture-specific environments
 archTools = ["default", "midl", "msrpc"]
 env32 = env.Clone(TARGET_ARCH="x86", tools=archTools)
+env32.Tool("compilation_db") 
 env64 = env.Clone(TARGET_ARCH="x86_64", tools=archTools)
 envArm64 = env.Clone(TARGET_ARCH="arm64", tools=archTools)
 # Hack around odd bug where some tool [after] msvc states that static and shared objects are different
@@ -274,6 +275,7 @@ env32.SConscript(
 	exports={"env": env32, "clientInstallDir": clientDir.Dir("x86"), "libInstallDir": sourceLibDir},
 	variant_dir="build/x86",
 )
+env32.CompilationDatabase()
 env64.SConscript(
 	"nvdaHelper/archBuild_sconscript",
 	exports={"env": env64, "clientInstallDir": clientDir.Dir("x64"), "libInstallDir": sourceLibDir64},
