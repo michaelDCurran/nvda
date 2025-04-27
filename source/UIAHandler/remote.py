@@ -4,6 +4,7 @@
 # Copyright (C) 2021-2024 NV Access Limited
 
 
+from ctypes import byref, windll
 from typing import (
 	Optional,
 	Any,
@@ -26,6 +27,7 @@ from ._remoteOps.lowLevel import (
 	AttributeId,
 	StyleId,
 	PropertyId,
+	AutomationIdentifierType
 )
 
 
@@ -181,14 +183,29 @@ def findFirstHeadingInTextRange(
 		cast(UIA.IUIAutomationTextRange, paragraphRange),
 	)
 
+_propertyIdToGuidCache = {}
+def propertyIdToGuid(propertyId: int) -> GUID:
+	guid = _propertyIdToGuidCache.get(propertyId)
+	if guid is not None:
+		return guid
+	guid = GUID()
+	res = windll.UIAutomationCore.UiaLookupId(propertyId, byref(guid))
+	if res != 0 or not guid:
+		raise RuntimeError(f"Failed to convert propertyId {propertyId} to GUID")
+	_propertyIdToGuidCache[propertyId] = guid
+	return guid
+
 def collectAllDataForTextRange(
 	arg_textRange: UIA.IUIAutomationTextRange,
 	arg_neededProperties: list[int],
+	arg_neededCustomProperties: list[GUID],
 	arg_neededAttributes: list[int],
 	arg_rootElement: UIA.IUIAutomationElement,
 ) -> Generator[tuple[str, list[Any], list[UIA.IUIAutomationElement]], None, None]:
-	op = operation.Operation(enableCompiletimeLogging=False, localMode=False)
+	op = operation.Operation(enableCompiletimeLogging=False, localMode=False, enableRuntimeLogging=False)
 
+	import time
+	startTime = time.time()
 	@op.buildIterableFunction
 	def code(ra: remoteAPI.RemoteAPI):
 		logicalFullTextRange = ra.newTextRange(arg_textRange).getLogicalAdapter()
@@ -196,8 +213,10 @@ def collectAllDataForTextRange(
 		textPattern = rootElement.getTextPattern()
 		rootElementId = rootElement.getPropertyValue(PropertyId.RuntimeId).stringify()
 		cacheRequest = ra.newCacheRequest()
-		for propertyId in arg_neededProperties:
-			cacheRequest.addProperty(propertyId)
+		for prop in arg_neededProperties:
+			cacheRequest.addProperty(prop)
+		for prop in arg_neededCustomProperties:
+			cacheRequest.addCustomProperty(prop)
 		elementMap = ra.newStringMap()
 		ra.Yield(elementMap)
 		walkingTextRange = ra.newTextRange(arg_textRange, static=True)
@@ -237,5 +256,12 @@ def collectAllDataForTextRange(
 					elementId.set(Element.getPropertyValue(PropertyId.RuntimeId).stringify())
 					elementInfo['parentElementId'] = elementId
 			ra.Yield(text, attributes, deepestRemoteElementId)
+	endTime = time.time()
+	log.info(f"Building collectAllDataForTextRange took {endTime - startTime:.2f} seconds")
 
-	yield from op.iterExecute(maxTries=100)
+	import time
+	startTime = time.time()
+	results = list(op.iterExecute(maxTries=100))
+	endTime = time.time()
+	log.info(f"collectAllDataForTextRange took {endTime - startTime:.2f} seconds")
+	yield from results

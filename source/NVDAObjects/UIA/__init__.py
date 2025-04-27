@@ -123,6 +123,8 @@ class UIATextInfo(textInfos.TextInfo):
 		UIAHandler.UIA_GridItemRowPropertyId,
 		UIAHandler.UIA_TableItemRowHeaderItemsPropertyId,
 		UIAHandler.UIA_GridItemColumnPropertyId,
+		UIAHandler.UIA_GridItemRowSpanPropertyId,
+		UIAHandler.UIA_GridItemColumnSpanPropertyId,
 		UIAHandler.UIA_TableItemColumnHeaderItemsPropertyId,
 		UIAHandler.UIA_GridRowCountPropertyId,
 		UIAHandler.UIA_GridColumnCountPropertyId,
@@ -139,10 +141,19 @@ class UIATextInfo(textInfos.TextInfo):
 		UIAHandler.UIA_IsDialogPropertyId,
 	}
 
+	_controlFieldUIACachedCustomPropertyGuids = set()
+
+	_controlFieldUIACachedCustomPropertyIDs = set()
+
 	def _get__controlFieldUIACacheRequest(self):
 		"""The UIA cacheRequest object that will be used when fetching all UIA elements needed when generating control fields for this TextInfo's content."""
 		cacheRequest = UIAHandler.handler.baseCacheRequest.clone()
 		for ID in self._controlFieldUIACachedPropertyIDs:
+			try:
+				cacheRequest.addProperty(ID)
+			except COMError:
+				pass
+		for ID in self._controlFieldUIACachedCustomPropertyIDs:
 			try:
 				cacheRequest.addProperty(ID)
 			except COMError:
@@ -852,7 +863,7 @@ class UIATextInfo(textInfos.TextInfo):
 				obj = controlFieldNVDAObjectClass(
 					windowHandle=windowHandle,
 					UIAElement=parentElement,
-					initialUIACachedPropertyIDs=self._controlFieldUIACachedPropertyIDs,
+					initialUIACachedPropertyIDs=self._controlFieldUIACachedPropertyIDs | self._controlFieldUIACachedCustomPropertyIDs
 				)
 				objIsEmbedded = index == 0 and not recurseChildren
 				field = self._getControlFieldForUIAObject(
@@ -1048,12 +1059,73 @@ class UIATextInfo(textInfos.TextInfo):
 		if debug:
 			log.debug("_getTextWithFieldsForUIARange end")
 
+	def new_getTextWithFieldsForUIARange(  # noqa: C901
+		self,
+		rootElement: UIAHandler.IUIAutomationElement,
+		textRange: IUIAutomationTextRangeT,
+		formatConfig: Dict,
+	):
+		rootElementId = rootElement.getRuntimeId()
+		parentIdMap = {}
+		elementMap = {}
+		prevAncestorIds = []
+		controlFieldStack = []
+		ancestorCount = 0
+		cachedAncestorCount = 0
+		windowHandle = self.obj.windowHandle
+		controlFieldNVDAObjectClass = self.controlFieldNVDAObjectClass
+		for formatRange in iterUIARangeByUnit(textRange, UIAHandler.TextUnit_Format):
+			text = self._getTextFromUIARange(formatRange) or ""
+			formatRange.MoveEndpointByRange(UIAHandler.TextPatternRangeEndpoint_End, formatRange, UIAHandler.TextPatternRangeEndpoint_Start)
+			formatRange.expandToEnclosingUnit(UIAHandler.TextUnit_Character)
+			element = getEnclosingElementWithCacheFromUIATextRange(formatRange, self._controlFieldUIACacheRequest)
+			ancestorIds = []
+			prevElementId = None
+			while element:
+				elementId = element.getRuntimeId()
+				ancestorIds.append(elementId)
+				ancestorCount += 1
+				elementMap[elementId] = element
+				if prevElementId is not None:
+					parentIdMap[prevElementId] = elementId
+				prevElementId = elementId
+				parentElementId = parentIdMap.get(elementId)
+				if parentElementId is not None:
+					while parentElementId:
+						ancestorIds.append(parentElementId)
+						ancestorCount += 1
+						cachedAncestorCount += 1
+						parentElementId = parentIdMap.get(parentElementId)
+					break
+				if elementId == rootElementId:
+					break
+				element = UIAHandler.handler.baseTreeWalker.getParentElementBuildCache(element, self._controlFieldUIACacheRequest)
+			zipped_ancestors = list(zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)))
+			for prevAncestorId, ancestorId in zipped_ancestors:
+				if prevAncestorId != ancestorId and prevAncestorId is not None:
+					yield textInfos.FieldCommand("controlEnd", controlFieldStack.pop())
+			for prevAncestorId, ancestorId in zipped_ancestors:
+				if prevAncestorId != ancestorId and ancestorId is not None:
+					ancestor = elementMap[ancestorId]
+					obj = controlFieldNVDAObjectClass (windowHandle=windowHandle, UIAElement=ancestor, initialUIACachedPropertyIDs=self._controlFieldUIACachedPropertyIDs | self._controlFieldUIACachedCustomPropertyIDs)
+					ancestorRange = self.obj.UIATextPattern.rangeFromChild(ancestor)
+					clippedStart = ancestorRange.CompareEndpoints(UIAHandler.TextPatternRangeEndpoint_Start, textRange, UIAHandler.TextPatternRangeEndpoint_Start) < 0
+					clippedEnd = ancestorRange.CompareEndpoints(UIAHandler.TextPatternRangeEndpoint_End, textRange, UIAHandler.TextPatternRangeEndpoint_End) > 0
+					controlField = textInfos.FieldCommand("controlStart", self._getControlFieldForUIAObject(obj, startOfNode=not clippedStart, endOfNode=not clippedEnd))
+					controlFieldStack.append(controlField.field)
+					yield controlField
+			yield self._getFormatFieldAtRange(formatRange, formatConfig, ignoreMixedValues=True)
+			yield text
+			prevAncestorIds = ancestorIds
+		log.info(f"Ancestor count: {ancestorCount}, cached ancestor count: {cachedAncestorCount}")
+
 	def _getTextWithFields_win11(self, textRange: IUIAutomationTextRangeT, formatConfig: Dict) -> Generator[textInfos.FieldCommand, None, None]:
 		textList = []
 		prevAncestorIds = []
 		requiredPropertyIds = [
 			UIAPropertyId(x) for x in (UIAHandler.baseCachePropertyIDs | self._controlFieldUIACachedPropertyIDs)
 		]
+		requiredCustomPropertyGuids = self._controlFieldUIACachedCustomPropertyGuids
 		requiredAttributeIds = [
 			UIATextAttributeId(x) for x in self.getRequiredUIATextAttributeIDs(formatConfig)
 		]
@@ -1061,14 +1133,16 @@ class UIATextInfo(textInfos.TextInfo):
 		data = UIAHandler.remote.collectAllDataForTextRange(
 			self._rangeObj,
 			requiredPropertyIds,
+			requiredCustomPropertyGuids,
 			requiredAttributeIds,
 			self.obj.UIAElement
 		)
 		elementMap = {}
-
+		windowHandle = self.obj.windowHandle
+		controlFieldNVDAObjectClass = self.controlFieldNVDAObjectClass
 		for record in data:
 			if isinstance(record, dict):
-				elementMap.update(record)
+				elementMap = record
 				continue
 			text, attribValues, deepestElementId = record
 			ancestorIds = []
@@ -1077,20 +1151,20 @@ class UIATextInfo(textInfos.TextInfo):
 				elementInfo = elementMap[elementId]
 				ancestorIds.append(elementId)
 				elementId = elementInfo.get("parentElementId")
-			for prevAncestorId, ancestorId in zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)):
-				if prevAncestorId != ancestorId:
-					if prevAncestorId:
-						controlField = controlFieldStack.pop()
-						yield textInfos.FieldCommand("controlEnd", controlField)
-			for prevAncestorId, ancestorId in zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)):
-				if prevAncestorId != ancestorId:
-					if ancestorId:
-						ancestorInfo = elementMap[ancestorId]
-						obj = UIA(UIAElement=ancestorInfo['element'], windowHandle=self.obj.windowHandle, initialUIACachedPropertyIDs=requiredPropertyIds)
-						controlField = self._getControlFieldForUIAObject(obj, startOfNode=not ancestorInfo['clippedStart'], endOfNode=not ancestorInfo['clippedEnd'])
-						controlFieldStack.append(controlField)
-						yield textInfos.FieldCommand("controlStart", controlField)
+			zipped_ancestors = list(zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)))
+			for prevAncestorId, ancestorId in zipped_ancestors:
+				if prevAncestorId != ancestorId and prevAncestorId:
+					controlField = controlFieldStack.pop()
+					yield textInfos.FieldCommand("controlEnd", controlField)
+			for prevAncestorId, ancestorId in zipped_ancestors:
+				if prevAncestorId != ancestorId and ancestorId:
+					ancestorInfo = elementMap[ancestorId]
+					obj = controlFieldNVDAObjectClass (windowHandle=windowHandle, UIAElement=ancestorInfo['element'], initialUIACachedPropertyIDs=requiredPropertyIds + list(self._controlFieldUIACachedCustomPropertyIDs))
+					controlField = self._getControlFieldForUIAObject(obj, startOfNode=not ancestorInfo['clippedStart'], endOfNode=not ancestorInfo['clippedEnd'])
+					controlFieldStack.append(controlField)
+					yield textInfos.FieldCommand("controlStart", controlField)
 			attribsMap = {requiredAttributeIds[i]: attribValues[i] for i in range(len(requiredAttributeIds))}
+			print(f"{attribsMap=}")
 			formatField = self._getFormatField(formatConfig, attribsMap.get)
 			yield textInfos.FieldCommand("formatChange", formatField)
 			yield text
@@ -1098,13 +1172,24 @@ class UIATextInfo(textInfos.TextInfo):
 
 
 	def getTextWithFields(self, formatConfig: Optional[Dict] = None) -> textInfos.TextInfo.TextWithFieldsT:
-		import time
-		startTime = time.time()
-		fields = list(self._getTextWithFields_win11(self._rangeObj, formatConfig))
-		print("Time to get fields: %s" % (time.time() - startTime))
-		return fields
 		if not formatConfig:
 			formatConfig = config.conf["documentFormatting"]
+		import time
+		startTime = time.time()
+		fields = list(self._getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
+		endTime = time.time()
+		log.info(f"_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
+		del fields
+		startTime = time.time()
+		fields = list(self.new_getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
+		endTime = time.time()
+		log.info(f"new_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
+		del fields
+		startTime = time.time()
+		fields = list(self._getTextWithFields_win11(self._rangeObj, formatConfig))
+		endTime = time.time()
+		log.info(f"getTextWithFields_win11 took {endTime - startTime} seconds")
+		return fields
 		fields = list(self._getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
 		return fields
 
@@ -1231,7 +1316,9 @@ class UIA(Window):
 			value = cacheElement.getCachedPropertyValueEx(ID, ignoreDefault)
 		else:
 			# The value is cached nowhere, so ask the UIAElement for its current value for the property
-			log.warning(f"Fetching value for {ID}", stack_info=True)
+			# log.warning(f"Fetching value for {ID}", stack_info=True)
+			if self.initialUIACachedPropertyIDs:
+				raise RuntimeError
 			value = self.UIAElement.getCurrentPropertyValueEx(ID, ignoreDefault)
 		return value
 
@@ -1632,9 +1719,11 @@ class UIA(Window):
 			raise InvalidNVDAObject("no windowHandle")
 		super(UIA, self).__init__(windowHandle=windowHandle)
 
+		elementCache = self._coreCycleUIAPropertyCacheElementCache
+		for ID in UIAHandler.baseCachePropertyIDs:
+				elementCache[ID] = self.UIAElement
 		self.initialUIACachedPropertyIDs = initialUIACachedPropertyIDs
 		if initialUIACachedPropertyIDs:
-			elementCache = self._coreCycleUIAPropertyCacheElementCache
 			for ID in initialUIACachedPropertyIDs:
 				elementCache[ID] = self.UIAElement
 

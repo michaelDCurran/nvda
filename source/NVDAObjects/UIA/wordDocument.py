@@ -164,6 +164,19 @@ class CommentUIATextInfoQuickNavItem(TextAttribUIATextInfoQuickNavItem):
 
 
 class WordDocumentTextInfo(UIATextInfo):
+
+	_cached__controlFieldUIACachedCustomPropertyGuids = True
+	def _get__controlFieldUIACachedCustomPropertyGuids (self):
+		IDs = super()._controlFieldUIACachedCustomPropertyGuids .copy()
+		IDs.add(self.obj._UIACustomProps.word_mathml.guid)
+		return IDs
+
+	_cached__controlFieldUIACachedCustomPropertyIDs = True
+	def _get__controlFieldUIACachedCustomPropertyIDs(self):
+		IDs = super()._controlFieldUIACachedCustomPropertyIDs .copy()
+		IDs.add(self.obj._UIACustomProps.word_mathml.id)
+		return IDs
+
 	def getMathMl(self, field):
 		mathml = field.get("mathml")
 		if not mathml:
