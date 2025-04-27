@@ -42,3 +42,6 @@
 	path = .vscode
 	url = https://github.com/nvaccess/vscode-nvda.git
 	ignore = dirty
+[submodule "include/pybind11"]
+	path = include/pybind11
+	url = https://github.com/pybind11/pybind11
