@@ -6,6 +6,7 @@
 
 from ctypes import byref, windll
 from typing import (
+	Iterable,
 	Optional,
 	Any,
 	Generator,
@@ -19,6 +20,7 @@ from ._remoteOps import remoteAlgorithms
 from ._remoteOps.remoteTypes import (
 	RemoteExtensionTarget,
 	RemoteInt,
+	RemoteArray,
 )
 from ._remoteOps import operation
 from ._remoteOps import remoteAPI
@@ -201,8 +203,9 @@ def collectAllDataForTextRange(
 	arg_neededCustomProperties: list[GUID],
 	arg_neededAttributes: list[int],
 	arg_rootElement: UIA.IUIAutomationElement,
+	localMode: bool = False,
 ) -> Generator[tuple[str, list[Any], list[UIA.IUIAutomationElement]], None, None]:
-	op = operation.Operation(enableCompiletimeLogging=False, localMode=False, enableRuntimeLogging=False)
+	op = operation.Operation(enableCompiletimeLogging=False, localMode=localMode, enableRuntimeLogging=False)
 
 	import time
 	startTime = time.time()
@@ -215,10 +218,12 @@ def collectAllDataForTextRange(
 		cacheRequest = ra.newCacheRequest()
 		for prop in arg_neededProperties:
 			cacheRequest.addProperty(prop)
-		for prop in arg_neededCustomProperties:
-			cacheRequest.addCustomProperty(prop)
+		for propGuid in arg_neededCustomProperties:
+			cacheRequest.addCustomProperty(propGuid)
 		elementMap = ra.newStringMap()
 		ra.Yield(elementMap)
+		numTotalElements = ra.newInt(0)
+		numCachedElementsFetched = ra.newInt(0)
 		walkingTextRange = ra.newTextRange(arg_textRange, static=True)
 		with remoteAlgorithms.remote_forEachUnitInTextRange(
 			ra,
@@ -232,12 +237,31 @@ def collectAllDataForTextRange(
 			attributes = ra.newArray()
 			for attributeId in arg_neededAttributes:
 				val = formatRange.getAttributeValue(attributeId)
-				attributes.append(val)
+				if not localMode and attributeId == AttributeId.AnnotationTypes:
+					newVals = ra.newArray()
+					with ra.ifBlock(val.isArray()):
+						with ra.forEachItemInArray(val.asType(RemoteArray)) as item:
+							with ra.ifBlock(item.isInt()):
+								guidVal = ra.lookupGuidFromAutomationIdentifier(item.asType(RemoteInt), AutomationIdentifierType.Annotation)
+								newVals.append(guidVal)
+							with ra.elseBlock():
+								newVals.append(item)
+					with ra.elseBlock():
+						with ra.ifBlock(val.isInt()):
+							guidVal = ra.lookupGuidFromAutomationIdentifier(val.asType(RemoteInt), AutomationIdentifierType.Annotation)
+							newVals.append(guidVal)
+						with ra.elseBlock():
+							newVals.append(val)
+					attributes.append(newVals)
+				else:
+					attributes.append(val)
 			Element = formatRange.getEnclosingElement()
 			elementId = Element.getPropertyValue(PropertyId.RuntimeId).stringify()
 			deepestRemoteElementId = elementId.copy()
 			with ra.whileBlock(lambda: Element.isNull().inverse()):
+				numTotalElements += 1
 				with ra.ifBlock(elementMap.hasKey(elementId)):
+					numCachedElementsFetched += 1
 					ra.breakLoop()
 				Element.populateCache(cacheRequest)
 				elementInfo = ra.newStringMap()
@@ -256,6 +280,7 @@ def collectAllDataForTextRange(
 					elementId.set(Element.getPropertyValue(PropertyId.RuntimeId).stringify())
 					elementInfo['parentElementId'] = elementId
 			ra.Yield(text, attributes, deepestRemoteElementId)
+		ra.logRuntimeMessage("fetched ", numCachedElementsFetched, " elements out of ", numTotalElements)
 	endTime = time.time()
 	log.info(f"Building collectAllDataForTextRange took {endTime - startTime:.2f} seconds")
 
@@ -264,4 +289,37 @@ def collectAllDataForTextRange(
 	results = list(op.iterExecute(maxTries=100))
 	endTime = time.time()
 	log.info(f"collectAllDataForTextRange took {endTime - startTime:.2f} seconds")
-	yield from results
+	elementMap = {}
+	def resultsProcessor():
+		for record in results:
+			if isinstance(record, dict):
+				elementMap.update(record)
+			else:
+				text, attribValues, deepestRemoteElementId = record
+				ancestorIds = []
+				elementId = deepestRemoteElementId
+				while elementId:
+					elementInfo = elementMap[elementId]
+					ancestorIds.append(elementId)
+					elementId = elementInfo.get("parentElementId")
+				attribsMap = {arg_neededAttributes[i].value : attribValues[i] for i in range(len(arg_neededAttributes))}
+				annotationTypesVal = attribsMap.get(AttributeId.AnnotationTypes.value)
+				if isinstance(annotationTypesVal, GUID):
+					ID = windll.UIAutomationCore.UiaLookupId(AutomationIdentifierType.Annotation, byref(annotationTypesVal))
+					if ID != 0:
+						annotationTypesVal = ID
+					else:
+						log.debugWarning(f"Failed to convert GUID {annotationTypesVal} to ID")
+				elif isinstance(annotationTypesVal, Iterable):
+					resolvedAnnotationTypes = []
+					for item in annotationTypesVal:
+						if isinstance(item, GUID):
+							ID = windll.UIAutomationCore.UiaLookupId(AutomationIdentifierType.Annotation, byref(item))
+							if ID != 0:
+								resolvedAnnotationTypes.append(ID)
+							else:
+								log.debugWarning(f"Failed to convert GUID {item} to ID")
+					annotationTypesVal = resolvedAnnotationTypes
+				attribsMap[AttributeId.AnnotationTypes.value] = annotationTypesVal
+				yield text, attribsMap, ancestorIds
+	return elementMap, resultsProcessor()

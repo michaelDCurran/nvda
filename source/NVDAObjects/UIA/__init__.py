@@ -16,9 +16,11 @@ from typing import (
 	Tuple,
 	Callable,
 )
+from collections.abc import Iterable
 from itertools import zip_longest
 import array
 from ctypes.wintypes import POINT
+from ctypes import windll
 from comtypes import COMError
 import time
 import numbers
@@ -367,7 +369,7 @@ class UIATextInfo(textInfos.TextInfo):
 		annotationTypes = fetch(UIAHandler.UIA_AnnotationTypesAttributeId)
 		# Some UIA implementations return a single value rather than a tuple.
 		# Always mutate to a tuple to allow for a generic x in y matching
-		if not isinstance(annotationTypes, tuple):
+		if not isinstance(annotationTypes, Iterable):
 			annotationTypes = (annotationTypes,)
 		if formatConfig["reportSpellingErrors"]:
 			if UIAHandler.AnnotationType_SpellingError in annotationTypes:
@@ -1070,8 +1072,8 @@ class UIATextInfo(textInfos.TextInfo):
 		elementMap = {}
 		prevAncestorIds = []
 		controlFieldStack = []
-		ancestorCount = 0
-		cachedAncestorCount = 0
+		numTotalElements = 0
+		numFetchedCachedElements = 0
 		windowHandle = self.obj.windowHandle
 		controlFieldNVDAObjectClass = self.controlFieldNVDAObjectClass
 		for formatRange in iterUIARangeByUnit(textRange, UIAHandler.TextUnit_Format):
@@ -1119,7 +1121,7 @@ class UIATextInfo(textInfos.TextInfo):
 			prevAncestorIds = ancestorIds
 		log.info(f"Ancestor count: {ancestorCount}, cached ancestor count: {cachedAncestorCount}")
 
-	def _getTextWithFields_win11(self, textRange: IUIAutomationTextRangeT, formatConfig: Dict) -> Generator[textInfos.FieldCommand, None, None]:
+	def _getTextWithFields_win11(self, textRange: IUIAutomationTextRangeT, formatConfig: Dict, localMode=False) -> Generator[textInfos.FieldCommand, None, None]:
 		textList = []
 		prevAncestorIds = []
 		requiredPropertyIds = [
@@ -1130,27 +1132,17 @@ class UIATextInfo(textInfos.TextInfo):
 			UIATextAttributeId(x) for x in self.getRequiredUIATextAttributeIDs(formatConfig)
 		]
 		controlFieldStack = []
-		data = UIAHandler.remote.collectAllDataForTextRange(
+		elementMap, chunkRecords = UIAHandler.remote.collectAllDataForTextRange(
 			self._rangeObj,
 			requiredPropertyIds,
 			requiredCustomPropertyGuids,
 			requiredAttributeIds,
-			self.obj.UIAElement
+			self.obj.UIAElement,
+			localMode=localMode
 		)
-		elementMap = {}
 		windowHandle = self.obj.windowHandle
 		controlFieldNVDAObjectClass = self.controlFieldNVDAObjectClass
-		for record in data:
-			if isinstance(record, dict):
-				elementMap = record
-				continue
-			text, attribValues, deepestElementId = record
-			ancestorIds = []
-			elementId = deepestElementId
-			while elementId:
-				elementInfo = elementMap[elementId]
-				ancestorIds.append(elementId)
-				elementId = elementInfo.get("parentElementId")
+		for text, attribsMap, ancestorIds in chunkRecords:
 			zipped_ancestors = list(zip_longest(reversed(prevAncestorIds), reversed(ancestorIds)))
 			for prevAncestorId, ancestorId in zipped_ancestors:
 				if prevAncestorId != ancestorId and prevAncestorId:
@@ -1163,8 +1155,6 @@ class UIATextInfo(textInfos.TextInfo):
 					controlField = self._getControlFieldForUIAObject(obj, startOfNode=not ancestorInfo['clippedStart'], endOfNode=not ancestorInfo['clippedEnd'])
 					controlFieldStack.append(controlField)
 					yield textInfos.FieldCommand("controlStart", controlField)
-			attribsMap = {requiredAttributeIds[i]: attribValues[i] for i in range(len(requiredAttributeIds))}
-			print(f"{attribsMap=}")
 			formatField = self._getFormatField(formatConfig, attribsMap.get)
 			yield textInfos.FieldCommand("formatChange", formatField)
 			yield text
@@ -1175,16 +1165,24 @@ class UIATextInfo(textInfos.TextInfo):
 		if not formatConfig:
 			formatConfig = config.conf["documentFormatting"]
 		import time
-		startTime = time.time()
-		fields = list(self._getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
-		endTime = time.time()
-		log.info(f"_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
-		del fields
-		startTime = time.time()
-		fields = list(self.new_getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
-		endTime = time.time()
-		log.info(f"new_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
-		del fields
+		if False:
+			startTime = time.time()
+			fields = list(self._getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
+			endTime = time.time()
+			log.info(f"_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
+			del fields
+		if False:
+			startTime = time.time()
+			fields = list(self.new_getTextWithFieldsForUIARange(self.obj.UIAElement, self._rangeObj, formatConfig))
+			endTime = time.time()
+			log.info(f"new_getTextWithFieldsForUIARange took {endTime - startTime} seconds")
+			del fields
+		if False:
+			startTime = time.time()
+			fields = list(self._getTextWithFields_win11(self._rangeObj, formatConfig, localMode=True))
+			endTime = time.time()
+			log.info(f"local getTextWithFields_win11 took {endTime - startTime} seconds")
+			del fields
 		startTime = time.time()
 		fields = list(self._getTextWithFields_win11(self._rangeObj, formatConfig))
 		endTime = time.time()
