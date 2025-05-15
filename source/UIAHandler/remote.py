@@ -246,12 +246,11 @@ def collectAllDataForTextRange(
 								newVals.append(guidVal)
 							with ra.elseBlock():
 								newVals.append(item)
+					with ra.elifBlock(val.isInt()):
+						guidVal = ra.lookupGuidFromAutomationIdentifier(val.asType(RemoteInt), AutomationIdentifierType.Annotation)
+						newVals.append(guidVal)
 					with ra.elseBlock():
-						with ra.ifBlock(val.isInt()):
-							guidVal = ra.lookupGuidFromAutomationIdentifier(val.asType(RemoteInt), AutomationIdentifierType.Annotation)
-							newVals.append(guidVal)
-						with ra.elseBlock():
-							newVals.append(val)
+						newVals.append(val)
 					attributes.append(newVals)
 				else:
 					attributes.append(val)
