@@ -60,6 +60,8 @@ from .controlFlow import (
 	EndTryBlock,
 	BreakLoop,
 	ContinueLoop,
+	JumpElse,
+	JumpCatch,
 )
 from .element import (
 	IsElement,
